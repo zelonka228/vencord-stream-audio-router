@@ -103,6 +103,43 @@ then enable Discord's **Share Audio** toggle.
 
 This is a Vencord **userplugin** — built from source, not from the plugin store.
 
+#### 1. Prerequisites (per OS)
+
+**Linux (Debian/Kali/Ubuntu):**
+```bash
+sudo apt install git nodejs npm pulseaudio-utils
+sudo npm install -g pnpm
+```
+If you're on PipeWire instead of PulseAudio, swap `pulseaudio-utils` for `pipewire-pulse` (most modern distros already have `pactl` available either way — run `pactl --version` to check).
+
+**Windows:**
+1. Install [Git for Windows](https://git-scm.com/download/win).
+2. Install [Node.js LTS](https://nodejs.org/) (includes npm).
+3. In a terminal: `npm install -g pnpm`.
+
+**macOS:**
+```bash
+xcode-select --install
+brew install git node
+npm install -g pnpm
+```
+
+#### 2. Install Discord itself, then Vencord
+
+Discord has to already be installed and have been launched at least once
+(so its actual app folder exists) before running the Vencord installer:
+
+```bash
+sh -c "$(curl -sS https://vencord.dev/install.sh)"
+```
+
+Point it at your real Discord install folder if it doesn't find it
+automatically (on Linux this is typically under
+`~/.config/discord/app-<version>` after Discord's first launch, not
+`/usr/share/discord`).
+
+#### 3. Build Vencord from source with this plugin included
+
 ```bash
 git clone https://github.com/Vencord/Vencord
 cd Vencord
@@ -261,6 +298,42 @@ brew install blackhole-2ch
 ### Установка
 
 Это **userplugin** для Vencord — собирается из исходников, не через магазин плагинов.
+
+#### 1. Предварительные требования (по ОС)
+
+**Linux (Debian/Kali/Ubuntu):**
+```bash
+sudo apt install git nodejs npm pulseaudio-utils
+sudo npm install -g pnpm
+```
+Если у тебя PipeWire вместо PulseAudio — вместо `pulseaudio-utils` поставь `pipewire-pulse` (на большинстве современных дистрибутивов `pactl` уже есть в любом случае — проверь командой `pactl --version`).
+
+**Windows:**
+1. Поставь [Git for Windows](https://git-scm.com/download/win).
+2. Поставь [Node.js LTS](https://nodejs.org/) (npm идёт вместе с ним).
+3. В терминале: `npm install -g pnpm`.
+
+**macOS:**
+```bash
+xcode-select --install
+brew install git node
+npm install -g pnpm
+```
+
+#### 2. Установи сам Discord, затем Vencord
+
+Discord должен быть уже установлен и хотя бы раз запущен (чтобы появилась
+его реальная папка с приложением) до запуска установщика Vencord:
+
+```bash
+sh -c "$(curl -sS https://vencord.dev/install.sh)"
+```
+
+Если он не найдёт Discord автоматически — укажи путь вручную (на Linux это
+обычно `~/.config/discord/app-<версия>` после первого запуска Discord, а
+не `/usr/share/discord`).
+
+#### 3. Собери Vencord из исходников вместе с этим плагином
 
 ```bash
 git clone https://github.com/Vencord/Vencord
