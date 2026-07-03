@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { excludeAppAudio } from "../streamAudioRouter/platform/linux.ts";
+import { excludeAppAudio } from "../platform/linux.ts";
 
 // Malicious/garbage ids must be rejected BEFORE any shell command runs,
 // so even on a machine without pactl this must throw synchronously-ish

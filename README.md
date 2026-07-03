@@ -158,14 +158,17 @@ Restart Discord and enable **StreamAudioRouter** under Vencord Settings → Plug
 
 ### Repo layout
 
+The repo root **is** the plugin folder - that's deliberate, so `git clone`ing
+this repo straight into `Vencord/src/userplugins/streamAudioRouter` works
+with no extra steps, no nested subfolder to flatten by hand.
+
 ```
-streamAudioRouter/
-├── index.tsx              # renderer: settings UI, OS detection, buttons
-├── native.ts               # Electron main-process bridge (IPC)
-└── platform/
-    ├── linux.ts            # pactl automation + pure, unit-tested parsers
-    ├── windows.ts           # opens native Windows per-app audio settings
-    └── macos.ts             # BlackHole detection + Audio MIDI Setup helpers
+index.tsx                   # renderer: settings UI, OS detection, buttons
+native.ts                    # Electron main-process bridge (IPC)
+platform/
+├── linux.ts                # pactl automation + pure, unit-tested parsers
+├── windows.ts               # opens native Windows per-app audio settings
+└── macos.ts                 # BlackHole detection + Audio MIDI Setup helpers
 test/
 ├── linux.platform.test.ts   # unit tests for the pactl output parsers
 ├── route-validation.mjs      # rejects malformed/malicious sink input ids
@@ -353,14 +356,18 @@ pnpm inject
 
 ### Структура репозитория
 
+Корень репозитория **и есть** папка плагина — это сделано специально, чтобы
+`git clone` этого репозитория сразу в `Vencord/src/userplugins/streamAudioRouter`
+работал без дополнительных шагов, без вложенной папки, которую нужно
+разворачивать вручную.
+
 ```
-streamAudioRouter/
-├── index.tsx              # рендер: UI настроек, определение ОС, кнопки
-├── native.ts               # мост в главный процесс Electron (IPC)
-└── platform/
-    ├── linux.ts            # автоматизация через pactl + чистые протестированные парсеры
-    ├── windows.ts           # открывает штатные настройки звука Windows
-    └── macos.ts             # проверка BlackHole + помощники Audio MIDI Setup
+index.tsx                   # рендер: UI настроек, определение ОС, кнопки
+native.ts                    # мост в главный процесс Electron (IPC)
+platform/
+├── linux.ts                # автоматизация через pactl + чистые протестированные парсеры
+├── windows.ts               # открывает штатные настройки звука Windows
+└── macos.ts                 # проверка BlackHole + помощники Audio MIDI Setup
 test/
 ├── linux.platform.test.ts   # юнит-тесты парсеров вывода pactl
 ├── route-validation.mjs      # отклоняет некорректные/вредоносные id

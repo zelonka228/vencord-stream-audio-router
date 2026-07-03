@@ -1,6 +1,6 @@
 /*
  * Standalone logic tests for the pure parsing functions in
- * streamAudioRouter/platform/linux.ts. These do not require pactl, Vencord,
+ * platform/linux.ts. These do not require pactl, Vencord,
  * or Discord to be installed - they run against captured/hand-built pactl
  * output to make sure the regex-based parsing holds up against real-world
  * formatting quirks (quotes, extra whitespace, multiple blocks, CRLF, etc).
@@ -15,7 +15,7 @@ import {
     findOwnerModuleOfSink,
     parseSinkInputs,
     shortSinksContainsName
-} from "../streamAudioRouter/platform/linux.ts";
+} from "../platform/linux.ts";
 
 let passed = 0;
 let failed = 0;
