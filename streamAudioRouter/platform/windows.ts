@@ -13,6 +13,12 @@
  * with a bundled native addon, this backend just opens that exact settings
  * page for the user via the `ms-settings:` URI scheme, which every Windows
  * 10/11 install supports out of the box - no extra installs required.
+ *
+ * Same strategy as the Linux backend: move the app you DON'T want heard
+ * (e.g. the game) to a non-default output device, leave everything you DO
+ * want heard (e.g. the browser) on the system default, then use Discord's
+ * own "Share Audio" screen-share toggle - it captures the default device.
+ * The microphone is never touched, so voice chat is completely unaffected.
  */
 
 import { exec as execCb } from "child_process";

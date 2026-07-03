@@ -3,10 +3,17 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Linux backend. Uses `pactl` (PulseAudio / PipeWire-Pulse, both share the same
- * CLI) to move a single application's audio stream into a dedicated virtual
- * sink, then points Discord's audio input at that sink's monitor. A loopback
- * module keeps the routed app audible locally, so the user doesn't lose sound
- * on their own end.
+ * CLI) to move the app you DON'T want heard (e.g. a game) out of the default
+ * audio pipeline and into a dedicated sink, while looping it back to your real
+ * speakers so you still hear it locally. Everything else - including the app
+ * you DO want Discord to hear - stays on the system default output.
+ *
+ * This never touches the microphone/input device. Discord's own "Share Audio"
+ * / "Stream With Audio" toggle (shown when you start a screen share) captures
+ * whatever plays through the system default output - once the noisy app is
+ * excluded, that's just the app you want. Your voice keeps going out on its
+ * own separate channel, completely unaffected, so it can never get drowned
+ * out by the routed audio.
  */
 
 import { execFile } from "child_process";
@@ -17,11 +24,11 @@ const exec = promisify(execFile);
 export interface AudioApp {
     /** pactl sink-input index, e.g. "42" */
     id: string;
-    /** Human readable app/media name, e.g. "Firefox" or "Spotify" */
+    /** Human readable app/media name, e.g. "Firefox" or "Counter-Strike" */
     name: string;
 }
 
-export const VIRTUAL_SINK_NAME = "VencordStreamMix";
+export const EXCLUDED_SINK_NAME = "VencordExcludedAudio";
 
 /**
  * Parses the (verbose) output of `pactl list sink-inputs` into a flat list
@@ -84,7 +91,7 @@ export function findOwnerModuleOfSink(raw: string, sinkName: string): string | n
 
 /**
  * Parses `pactl list modules` (verbose) output and returns the ids of every
- * module whose "Argument:" line contains the given needle.
+ * module whose "Argument:" line contains the given needle as a whole token.
  * Pure function.
  */
 export function findModuleIdsByArgument(raw: string, needle: string): string[] {
@@ -132,9 +139,6 @@ async function pactl(args: string[]): Promise<string> {
     }
 }
 
-/** Remembers the source that was active before we started routing, so we can restore it later. */
-let savedDefaultSource: string | null = null;
-
 export async function listAudioApps(): Promise<AudioApp[]> {
     const raw = await pactl(["list", "sink-inputs"]);
     return parseSinkInputs(raw);
@@ -142,23 +146,23 @@ export async function listAudioApps(): Promise<AudioApp[]> {
 
 async function sinkExists(): Promise<boolean> {
     const raw = await pactl(["list", "short", "sinks"]);
-    return shortSinksContainsName(raw, VIRTUAL_SINK_NAME);
+    return shortSinksContainsName(raw, EXCLUDED_SINK_NAME);
 }
 
-async function ensureVirtualSink(): Promise<void> {
+async function ensureExcludedSink(): Promise<void> {
     if (await sinkExists()) return;
 
     await pactl([
         "load-module",
         "module-null-sink",
-        `sink_name=${VIRTUAL_SINK_NAME}`,
-        `sink_properties=device.description=${VIRTUAL_SINK_NAME}`
+        `sink_name=${EXCLUDED_SINK_NAME}`,
+        `sink_properties=device.description=${EXCLUDED_SINK_NAME}`
     ]);
 }
 
-async function ensureLoopback(): Promise<void> {
+async function ensureLocalLoopback(): Promise<void> {
     const modulesRaw = await pactl(["list", "modules"]);
-    const existing = findModuleIdsByArgument(modulesRaw, `source=${VIRTUAL_SINK_NAME}.monitor`);
+    const existing = findModuleIdsByArgument(modulesRaw, `source=${EXCLUDED_SINK_NAME}.monitor`);
     if (existing.length > 0) return;
 
     const defaultSink = (await pactl(["get-default-sink"])).trim();
@@ -167,53 +171,49 @@ async function ensureLoopback(): Promise<void> {
     await pactl([
         "load-module",
         "module-loopback",
-        `source=${VIRTUAL_SINK_NAME}.monitor`,
+        `source=${EXCLUDED_SINK_NAME}.monitor`,
         `sink=${defaultSink}`,
         "latency_msec=1"
     ]);
 }
 
 /**
- * Moves the given app's audio stream into the virtual sink and points
- * Discord's audio input (default source) at that sink's monitor.
- * Safe to call multiple times / for multiple apps in a row.
+ * Moves the given app's audio stream OUT of the default output pipeline and
+ * into a dedicated sink, looped back to your speakers so you still hear it
+ * locally. Anything left on the default output (e.g. your browser) is what
+ * Discord's own "Share Audio" screen-share toggle will pick up. Never
+ * touches the microphone/input device.
  */
-export async function routeAppAudio(sinkInputId: string): Promise<void> {
+export async function excludeAppAudio(sinkInputId: string): Promise<void> {
     assertNumericId(sinkInputId, "sink input id");
 
-    if (savedDefaultSource === null) {
-        savedDefaultSource = (await pactl(["get-default-source"])).trim() || null;
-    }
+    await ensureExcludedSink();
+    await ensureLocalLoopback();
 
-    await ensureVirtualSink();
-    await ensureLoopback();
-
-    await pactl(["move-sink-input", sinkInputId, VIRTUAL_SINK_NAME]);
-    await pactl(["set-default-source", `${VIRTUAL_SINK_NAME}.monitor`]);
+    await pactl(["move-sink-input", sinkInputId, EXCLUDED_SINK_NAME]);
 }
 
 /**
- * Undoes everything: restores the previous default audio source and tears
- * down the virtual sink + loopback module. Looks modules up by name/argument
- * instead of relying on in-memory state, so it still works correctly after
- * a Discord restart or plugin reload.
+ * Undoes everything: tears down the loopback and the exclusion sink. Any
+ * stream still assigned to the exclusion sink is automatically reassigned
+ * to the system default sink by PulseAudio/PipeWire the moment that sink is
+ * unloaded, so excluded apps go right back to normal without extra bookkeeping.
+ *
+ * Modules are looked up by name/argument instead of relying on in-memory
+ * state, so this still works correctly after a Discord restart or plugin
+ * reload.
  */
 export async function restoreAudio(): Promise<void> {
-    if (savedDefaultSource) {
-        await pactl(["set-default-source", savedDefaultSource]).catch(() => { });
-        savedDefaultSource = null;
-    }
-
     const modulesRaw = await pactl(["list", "modules"]).catch(() => "");
-    const loopbackIds = findModuleIdsByArgument(modulesRaw, `source=${VIRTUAL_SINK_NAME}.monitor`);
+    const loopbackIds = findModuleIdsByArgument(modulesRaw, `source=${EXCLUDED_SINK_NAME}.monitor`);
     for (const id of loopbackIds) {
         await pactl(["unload-module", id]).catch(() => { });
     }
 
     const sinksRaw = await pactl(["list", "sinks"]).catch(() => "");
-    const nullSinkModuleId = findOwnerModuleOfSink(sinksRaw, VIRTUAL_SINK_NAME);
-    if (nullSinkModuleId) {
-        await pactl(["unload-module", nullSinkModuleId]).catch(() => { });
+    const excludedSinkModuleId = findOwnerModuleOfSink(sinksRaw, EXCLUDED_SINK_NAME);
+    if (excludedSinkModuleId) {
+        await pactl(["unload-module", excludedSinkModuleId]).catch(() => { });
     }
 }
 

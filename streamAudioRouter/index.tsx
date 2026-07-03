@@ -2,21 +2,33 @@
  * StreamAudioRouter for Vencord
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Lets you screen-share one window/app (e.g. a game) while Discord's voice
- * "microphone" input is actually the audio of a *different* app (e.g. your
- * browser). Discord itself ties shared-window audio to the shared window, so
- * this plugin works around that by routing audio at the OS level instead of
- * patching Discord's screen share picker (which uses obfuscated internals
- * that change across Discord updates - routing audio outside of Discord is
- * far more reliable long-term).
+ * Lets you screen-share one window/app (e.g. a game) while Discord's
+ * "Share Audio" stream captures a *different* app's audio (e.g. your
+ * browser's music) instead of the game's own sound.
+ *
+ * This works entirely through Discord's own built-in "Share Audio" /
+ * "Stream With Audio" toggle (shown when you start a screen share) - that
+ * toggle captures whatever plays through your system's default audio
+ * output. So instead of patching Discord's screen share picker (which uses
+ * obfuscated internals that change across updates, and can't be tested
+ * without a live Discord instance), this plugin just makes sure the app you
+ * DON'T want heard (e.g. the game) is moved off the default output, onto a
+ * separate device it still plays through locally. Whatever's left on the
+ * default output (e.g. your browser) is what Discord ends up streaming.
+ *
+ * Crucially, this never touches the microphone/voice input. Your voice and
+ * the shared audio are two completely separate channels on Discord's side,
+ * so the routed audio can never drown out or interfere with you talking.
  *
  * Workflow:
  *   1. Open Vencord Settings -> Plugins -> StreamAudioRouter (this panel).
- *   2. Pick the app whose audio you want Discord to hear, click "Route".
+ *   2. Pick the app you DON'T want Discord to hear (e.g. your game), click
+ *      Exclude.
  *   3. Start your screen share as normal (share the game window/screen).
- *   4. In Discord's Voice & Video settings, set Input Device to the
- *      suggested virtual device (Linux does this automatically for you).
- *   5. When done, click "Reset" to undo the routing and go back to normal.
+ *   4. Enable Discord's own "Share Audio" / "Stream With Audio" checkbox in
+ *      the share settings - it now only captures your browser (or whatever
+ *      else is still on the default output).
+ *   5. When done, click "Include back" to undo and go back to normal.
  *
  * Platform support is not equal, because the underlying OS audio APIs are
  * not equal - see platform/linux.ts, platform/windows.ts and
@@ -33,8 +45,6 @@ import { Button, Forms, Select, Toasts, useEffect, useState } from "@webpack/com
 import type { AudioApp } from "./platform/linux";
 
 const Native = VencordNative.pluginHelpers.StreamAudioRouter as PluginNative<typeof import("./native")>;
-
-const VIRTUAL_SINK_NAME = "VencordStreamMix";
 
 function notifySuccess(message: string) {
     Toasts.show({
@@ -84,13 +94,13 @@ function LinuxPanel() {
 
     useEffect(() => { refresh(); }, []);
 
-    async function handleRoute() {
+    async function handleExclude() {
         if (!selectedId) return;
         setBusy(true);
         try {
-            await Native.linuxRouteAppAudio(selectedId);
+            await Native.linuxExcludeAppAudio(selectedId);
             notifySuccess(
-                `Routed. In Discord's Voice & Video settings, set Input Device to "Monitor of ${VIRTUAL_SINK_NAME}" (only needs to be done once).`
+                "Done. Enable Discord's own \"Share Audio\" toggle when you start your screen share - it'll only pick up whatever's left on your default output. Your mic is untouched."
             );
         } catch (e) {
             notifyError(e);
@@ -114,7 +124,7 @@ function LinuxPanel() {
     return (
         <>
             <Forms.FormText>
-                Pick the app whose audio Discord should hear, then click Route. Share your game/window as normal afterwards - the audio stays independent of whatever window you share.
+                Pick the app you DON'T want Discord to hear (e.g. your game), then click Exclude. It keeps playing normally through your speakers - it's just taken off the system default output, which is what Discord's "Share Audio" screen-share toggle captures. Everything else (e.g. your browser) is what gets streamed. Your microphone is never touched.
             </Forms.FormText>
             <Divider className={Margins.top16} />
 
@@ -126,7 +136,7 @@ function LinuxPanel() {
 
             {!loadError && apps.length === 0 && (
                 <Forms.FormText className={Margins.top8}>
-                    {busy ? "Loading audio apps..." : "No apps are currently playing audio. Start playback in the app you want (e.g. your browser), then click Refresh."}
+                    {busy ? "Loading audio apps..." : "No apps are currently playing audio. Start playback in the app you want to exclude (e.g. your game), then click Refresh."}
                 </Forms.FormText>
             )}
 
@@ -144,11 +154,11 @@ function LinuxPanel() {
             <Button onClick={refresh} disabled={busy} color={Button.Colors.PRIMARY} className={Margins.top8}>
                 Refresh app list
             </Button>
-            <Button onClick={handleRoute} disabled={busy || !selectedId} color={Button.Colors.GREEN} className={Margins.top8}>
-                Route selected app's audio
+            <Button onClick={handleExclude} disabled={busy || !selectedId} color={Button.Colors.GREEN} className={Margins.top8}>
+                Exclude selected app from stream audio
             </Button>
             <Button onClick={handleRestore} disabled={busy} color={Button.Colors.RED} className={Margins.top8}>
-                Reset to normal audio
+                Include back / reset to normal
             </Button>
         </>
     );
@@ -158,7 +168,7 @@ function WindowsPanel() {
     return (
         <>
             <Forms.FormText>
-                Windows already supports per-app output devices natively - no extra software needed. Open the settings page below, then set your game to your headphones/speakers and point the app whose audio you want Discord to hear at a separate device (e.g. a virtual cable such as VB-Cable), and pick that same device as Discord's Input Device.
+                Windows already supports per-app output devices natively - no extra software needed. Open the settings page below, pin your game to your headphones/speakers directly (choose a specific device instead of "Default"), and leave the app you want Discord to hear (e.g. your browser) on "Default". Then, when you start your screen share, enable Discord's own "Share Audio" / "Stream With Audio" checkbox - it captures the default device, which is now just your browser. Your microphone is untouched, so voice chat keeps working normally.
             </Forms.FormText>
             <Divider className={Margins.top16} />
             <Button
@@ -182,7 +192,7 @@ function MacPanel() {
     return (
         <>
             <Forms.FormText>
-                macOS has no built-in per-app audio routing. The standard free solution is BlackHole, a virtual audio driver.
+                macOS has no per-app default output device, and most games don't expose their own output picker - so the reliable lever here is redirecting the app you DO want Discord to hear (usually your browser, since many browsers let you pick a playback device). The standard free tool for that is BlackHole, a virtual audio driver.
             </Forms.FormText>
             <Divider className={Margins.top16} />
 
@@ -194,7 +204,7 @@ function MacPanel() {
             )}
             {installed === true && (
                 <Forms.FormText className={Margins.top8}>
-                    BlackHole is installed. Open Audio MIDI Setup to build a Multi-Output Device (BlackHole + your speakers), then in the app whose audio you want to share, pick BlackHole as its output device. Set Discord's Input Device to BlackHole.
+                    BlackHole is installed. Open Audio MIDI Setup to build a Multi-Output Device (BlackHole + your speakers) so you still hear it locally, then in your browser's own output picker choose that Multi-Output Device. Finally, make that same device your Mac's system default output (Sound Settings), and enable Discord's "Share Audio" toggle when screen sharing - it captures the default output, i.e. your browser. Your microphone stays completely separate.
                 </Forms.FormText>
             )}
 
@@ -234,7 +244,7 @@ const settings = definePluginSettings({});
 
 export default definePlugin({
     name: "StreamAudioRouter",
-    description: "Screen-share one app/window while Discord captures a different app's audio (e.g. share a game, stream your browser's music).",
+    description: "Screen-share one app/window while Discord's Share Audio captures a different app's sound (e.g. share a game, stream your browser's music) - without touching your mic.",
     tags: ["Voice", "Media"],
     authors: [
         { name: "zelonka228", id: 0n }

@@ -2,8 +2,8 @@
 
 # StreamAudioRouter
 
-**A Vencord plugin: share one app/window's video while Discord captures a *different* app's audio.**
-**Плагин для Vencord: транслируешь окно одного приложения — а звук Discord слышит от другого.**
+**A Vencord plugin: share one app/window's video while Discord's "Share Audio" captures a *different* app's sound — without ever touching your mic.**
+**Плагин для Vencord: транслируешь окно одного приложения — а "Share Audio" Discord передаёт звук другого. Микрофон и голос при этом не трогаются.**
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)](#how-it-works-per-os--как-это-работает-по-ос)
@@ -25,16 +25,30 @@ browser's music instead of the game's SFX.
 
 ### The fix
 
-This plugin decouples video and audio by rerouting audio **at the OS
-level**, completely outside of Discord. You keep sharing whatever
-window/screen you want in the normal Discord UI — the plugin only changes
-which audio Discord's microphone input actually captures.
+Discord already has a "Share Audio" / "Stream With Audio" toggle in the
+screen-share settings — it's a **separate channel from your microphone**,
+so it can never talk over or interfere with your voice. The catch: it
+captures whatever plays through your system's **default** audio output,
+not a specific app.
 
-It does **not** patch Discord's own screen-share picker. That component is
-built from obfuscated, frequently-changing internals, and injecting into it
-would be fragile and unverifiable across updates. Routing audio outside of
-Discord is more reliable and, frankly, the only part actually testable
-without a live, unstable target to patch against.
+So this plugin doesn't touch your mic at all. It just makes sure the app
+you *don't* want heard (e.g. your game) is moved off the default output
+onto its own device — still playing normally through your speakers, just
+no longer part of what "Share Audio" picks up. Whatever's left on the
+default output (e.g. your browser) is what gets streamed.
+
+### Why not patch Discord's screen-share picker directly?
+
+We looked into this. Discord's own picker is closed-source and changes
+between releases, so a hand-written patch can't be verified without a live
+Discord instance. We also checked whether [Vesktop](https://github.com/Vencord/Vesktop)
+(Vencord's own official desktop client) solves this out of the box — it
+does, but **only on Linux**, via [venmic](https://github.com/Vencord/venmic),
+a PipeWire-based virtual mic. On Windows and macOS, even Vesktop just has
+the same plain "Stream With Audio" toggle as regular Discord. Since the
+goal here is one plugin that behaves the same way on all three OSes,
+without asking you to trust and install a whole alternate Discord client,
+we standardized on driving Discord's *existing* native toggle instead.
 
 ### How it works, per OS
 
@@ -44,30 +58,35 @@ actually allows.
 
 | OS | Automation | What happens |
 |---|---|---|
-| **Linux** | Fully automatic | Uses `pactl` (PulseAudio / PipeWire-Pulse) to move the chosen app's stream into a virtual sink, points Discord's audio input at that sink's monitor, and loops the audio back to your speakers so you still hear it. |
-| **Windows** | One click, native | Windows 10/11 already has per-app output device selection built in ("App volume and device preferences"). The plugin opens that exact page. No drivers, no installs. |
-| **macOS** | Guided | Core Audio has no per-app routing API a script can drive silently. The plugin detects [BlackHole](https://github.com/ExistentialAudio/BlackHole) and opens Audio MIDI Setup / Sound Settings so you can finish the last manual step yourself. |
+| **Linux** | Fully automatic | Uses `pactl` (PulseAudio / PipeWire-Pulse) to move the excluded app's stream into a dedicated sink, loops it back to your real output so you still hear it, and leaves everything else on the system default. |
+| **Windows** | One click, native | Windows 10/11 already has per-app output device selection built in ("App volume and device preferences"). The plugin opens that exact page so you can pin the noisy app to a non-default device. No drivers, no installs. |
+| **macOS** | Guided | macOS has no per-app output device at all, and most games can't be redirected. The plugin detects [BlackHole](https://github.com/ExistentialAudio/BlackHole) and opens Audio MIDI Setup / Sound Settings so you can route the app you *want* heard (usually the browser, since browsers are more likely to expose an output picker) through it. |
+
+In every case, **your microphone/voice input is never touched.** Talking
+and hearing other people in the call works exactly as it always has.
 
 #### Linux walkthrough
 
 1. Open **Vencord Settings → Plugins → StreamAudioRouter**.
-2. Play audio in the app you want Discord to capture (e.g. a browser tab).
-3. Click **Refresh app list**, pick that app, click **Route selected app's audio**.
-4. In Discord's **Voice & Video → Input Device**, choose `Monitor of VencordStreamMix` (one-time setup).
-5. Start your screen share as usual (share the game/window you actually want visible).
-6. When done, click **Reset to normal audio**.
+2. Play audio in the app you *don't* want Discord to hear (e.g. start your game).
+3. Click **Refresh app list**, select that app, click **Exclude selected app from stream audio**.
+4. Start your screen share as usual (share the game window/screen).
+5. Enable Discord's own **Share Audio** checkbox in the share settings.
+6. When done, click **Include back / reset to normal**.
 
-Under the hood: creates a `VencordStreamMix` null-sink → moves the chosen
-app's stream into it → loops the sink's monitor back to your real output
-(so you still hear it) → points the system default source at the monitor.
-"Reset" looks modules up **by name**, not remembered IDs, so it recovers
-correctly even after a Discord restart mid-session.
+Under the hood: creates a `VencordExcludedAudio` null-sink → moves the
+excluded app's stream into it → loops the sink's monitor back to your real
+output (so you still hear it locally). "Reset" looks modules up **by
+name**, not remembered IDs, so it recovers correctly even after a Discord
+restart mid-session — and PulseAudio automatically reassigns the excluded
+app back to the default output the moment the sink is torn down.
 
 #### Windows walkthrough
 
-Click **Open "App volume and device preferences"**. Pin your game to your
-headphones and route the other app to a separate device (e.g. a virtual
-cable) that you also select as Discord's Input Device.
+Click **Open "App volume and device preferences"**. Pin the noisy app
+(e.g. your game) to a specific device instead of "Default" — leave the app
+you want streamed on "Default". Then enable Discord's **Share Audio**
+toggle when you start your screen share.
 
 #### macOS walkthrough
 
@@ -75,10 +94,10 @@ cable) that you also select as Discord's Input Device.
 brew install blackhole-2ch
 ```
 
-Then use the plugin's buttons to open Audio MIDI Setup (build a
-Multi-Output Device with BlackHole + your speakers) and Sound Settings.
-Point the source app's own output picker at BlackHole, set BlackHole as
-Discord's Input Device.
+Use the plugin's buttons to open Audio MIDI Setup (build a Multi-Output
+Device with BlackHole + your speakers) and Sound Settings. Point your
+browser's own output picker at that device, make it your system default,
+then enable Discord's **Share Audio** toggle.
 
 ### Installation
 
@@ -127,7 +146,7 @@ This code has been:
   (zero errors) and **linted with Vencord's own ESLint config** (zero
   errors) — this caught two real bugs during review: an invalid
   `Forms.FormText.Types.DESCRIPTION` API call and an invalid plugin `tags`
-  value, both fixed.
+  value, both fixed before release.
 - **Built end-to-end with Vencord's real esbuild pipeline** and confirmed
   present in the compiled bundle.
 
@@ -160,16 +179,33 @@ Discord должен слышать музыку из браузера, а не 
 
 ### Решение
 
-Плагин разделяет видео и звук, перенаправляя звук **на уровне
-операционной системы**, полностью в обход Discord. Ты продолжаешь
-демонстрировать нужное окно/экран как обычно в интерфейсе Discord — плагин
-меняет только то, какой звук реально попадает во "вход микрофона" Discord.
+У Discord уже есть тумблер "Share Audio" / "Stream With Audio" в
+настройках демонстрации экрана — это **отдельный от микрофона канал**, он
+физически не может перебивать или мешать твоему голосу. Загвоздка в том,
+что он захватывает звук **системного вывода по умолчанию** целиком, а не
+конкретного приложения.
 
-Плагин **не патчит** встроенное окно выбора демонстрации Discord — этот
-компонент построен на обфусцированном коде, который часто меняется, и
-патчить его без возможности живого тестирования было бы ненадёжно.
-Маршрутизация звука в обход Discord надёжнее и, честно говоря, единственная
-часть, которую вообще можно проверить без нестабильной цели для патчинга.
+Поэтому плагин вообще не трогает микрофон. Он просто следит, чтобы
+приложение, звук которого ты **не** хочешь передавать (например, игра),
+было убрано с вывода по умолчанию на отдельное устройство — при этом оно
+продолжает нормально играть через твои колонки, просто больше не попадает
+в то, что захватывает "Share Audio". Всё, что осталось на выводе по
+умолчанию (например, браузер) — это то, что уйдёт в трансляцию.
+
+### Почему не патчим окно демонстрации Discord напрямую?
+
+Мы это рассматривали. Собственное окно выбора демонстрации в Discord —
+закрытый код, который меняется от релиза к релизу, и написанный вслепую
+патч невозможно проверить без живого запущенного Discord. Мы также
+проверили, решает ли это [Vesktop](https://github.com/Vencord/Vesktop)
+(официальный альтернативный клиент от самой команды Vencord) из коробки —
+решает, но **только на Linux**, через [venmic](https://github.com/Vencord/venmic)
+— их собственный виртуальный микрофон на базе PipeWire. На Windows и macOS
+даже у Vesktop точно такой же простой тумблер "Stream With Audio", как и в
+обычном Discord. Поскольку цель — один плагин, который одинаково работает
+на всех трёх ОС, и не просит тебя доверять и ставить целый альтернативный
+клиент Discord — мы остановились на управлении уже существующим штатным
+тумблером Discord.
 
 ### Как это работает по ОС
 
@@ -179,32 +215,37 @@ Discord должен слышать музыку из браузера, а не 
 
 | ОС | Автоматизация | Что происходит |
 |---|---|---|
-| **Linux** | Полностью автоматически | Через `pactl` (PulseAudio / PipeWire-Pulse) переносит поток выбранного приложения в виртуальный sink, направляет вход звука Discord на монитор этого sink, и зацикливает звук обратно на колонки, чтобы ты сам его тоже слышал. |
-| **Windows** | Одна кнопка, штатная функция ОС | В Windows 10/11 уже есть выбор устройства вывода для каждого приложения ("Громкость приложений и параметры устройств"). Плагин просто открывает нужную страницу. Без драйверов и установок. |
-| **macOS** | С подсказками | У Core Audio нет API для тихой маршрутизации звука по приложениям. Плагин определяет, установлен ли [BlackHole](https://github.com/ExistentialAudio/BlackHole), и открывает Audio MIDI Setup / настройки звука, чтобы ты сам завершил последний шаг вручную. |
+| **Linux** | Полностью автоматически | Через `pactl` (PulseAudio / PipeWire-Pulse) переносит поток исключаемого приложения в отдельный sink, зацикливает его обратно на реальный вывод (чтобы ты сам его слышал), а всё остальное остаётся на выводе по умолчанию. |
+| **Windows** | Одна кнопка, штатная функция ОС | В Windows 10/11 уже есть выбор устройства вывода для каждого приложения ("Громкость приложений и параметры устройств"). Плагин открывает нужную страницу, чтобы ты закрепил шумное приложение за отдельным устройством. Без драйверов и установок. |
+| **macOS** | С подсказками | У macOS вообще нет вывода по умолчанию для отдельных приложений, а большинство игр нельзя перенаправить. Плагин определяет, установлен ли [BlackHole](https://github.com/ExistentialAudio/BlackHole), и открывает Audio MIDI Setup / настройки звука, чтобы направить через него именно то приложение, звук которого нужен (обычно браузер — у браузеров чаще есть свой выбор устройства вывода). |
+
+В любом случае **микрофон/голосовой вход не трогается никогда.** Разговор
+и звук собеседников в канале работают ровно как обычно.
 
 #### Инструкция для Linux
 
 1. Открой **Настройки Vencord → Plugins → StreamAudioRouter**.
-2. Запусти воспроизведение звука в нужном приложении (например, вкладка браузера).
-3. Нажми **Refresh app list**, выбери приложение, нажми **Route selected app's audio**.
-4. В Discord → **Голос и видео → Устройство ввода** выбери `Monitor of VencordStreamMix` (нужно один раз).
-5. Запусти демонстрацию экрана как обычно (то окно/игру, которую действительно хочешь показать).
-6. По завершении нажми **Reset to normal audio**.
+2. Запусти звук в приложении, которое **не** хочешь, чтобы слышал Discord (например, запусти игру).
+3. Нажми **Refresh app list**, выбери это приложение, нажми **Exclude selected app from stream audio**.
+4. Запусти демонстрацию экрана как обычно (окно/экран игры).
+5. Включи штатный чекбокс **Share Audio** в настройках демонстрации Discord.
+6. По завершении нажми **Include back / reset to normal**.
 
-Под капотом: создаётся виртуальный sink `VencordStreamMix` → в него
-переносится поток выбранного приложения → его монитор зацикливается
-обратно на реальный вывод (чтобы звук не пропал у тебя) → системный
-источник по умолчанию переключается на этот монитор. Кнопка "Reset" ищет
-модули **по имени**, а не по запомненному ID — поэтому корректно
-восстанавливает состояние даже после перезапуска Discord посреди сессии.
+Под капотом: создаётся виртуальный sink `VencordExcludedAudio` → в него
+переносится поток исключаемого приложения → его монитор зацикливается
+обратно на реальный вывод (чтобы звук не пропал у тебя). Кнопка "Reset"
+ищет модули **по имени**, а не по запомненному ID — поэтому корректно
+восстанавливает состояние даже после перезапуска Discord посреди сессии, а
+PulseAudio сам возвращает исключённое приложение обратно на вывод по
+умолчанию в момент удаления sink.
 
 #### Инструкция для Windows
 
-Нажми **Open "App volume and device preferences"**. Закрепи игру за
-наушниками, а звук нужного приложения направь на отдельное устройство
-(например, виртуальный кабель), которое также выбери как устройство ввода
-в Discord.
+Нажми **Open "App volume and device preferences"**. Закрепи шумное
+приложение (например, игру) за конкретным устройством вместо "По
+умолчанию" — приложение, звук которого нужен в трансляции, оставь на "По
+умолчанию". Затем включи штатный тумблер **Share Audio** Discord при
+демонстрации экрана.
 
 #### Инструкция для macOS
 
@@ -212,9 +253,10 @@ Discord должен слышать музыку из браузера, а не 
 brew install blackhole-2ch
 ```
 
-Дальше через кнопки плагина открой Audio MIDI Setup (собери Multi-Output
-Device из BlackHole + твоих колонок) и настройки звука. В самом приложении
-выбери BlackHole как устройство вывода, а в Discord — как устройство ввода.
+Через кнопки плагина открой Audio MIDI Setup (собери Multi-Output Device
+из BlackHole + твоих колонок) и настройки звука. В собственном селекторе
+вывода браузера выбери это устройство, сделай его системным выводом по
+умолчанию, затем включи тумблер **Share Audio** Discord.
 
 ### Установка
 
@@ -263,7 +305,7 @@ test/
   Vencord** (0 ошибок) и **линтинг конфигом ESLint самого Vencord**
   (0 ошибок) — именно на этом этапе нашлись и были исправлены две реальные
   ошибки: несуществующий вызов `Forms.FormText.Types.DESCRIPTION` и
-  недопустимое значение `tags` у плагина.
+  недопустимое значение `tags` у плагина, ещё до релиза.
 - **Полную сборку через реальный esbuild-пайплайн Vencord** с подтверждением,
   что плагин действительно попадает в собранный бандл.
 

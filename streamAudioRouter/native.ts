@@ -29,8 +29,8 @@ export async function linuxListAudioApps(_: IpcMainInvokeEvent) {
     return linux.listAudioApps();
 }
 
-export async function linuxRouteAppAudio(_: IpcMainInvokeEvent, sinkInputId: string) {
-    return linux.routeAppAudio(sinkInputId);
+export async function linuxExcludeAppAudio(_: IpcMainInvokeEvent, sinkInputId: string) {
+    return linux.excludeAppAudio(sinkInputId);
 }
 
 export async function linuxRestoreAudio(_: IpcMainInvokeEvent) {
