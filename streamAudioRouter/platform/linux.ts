@@ -54,6 +54,16 @@ export function parseSinkInputs(raw: string): AudioApp[] {
 }
 
 /**
+ * Parses `pactl list short sinks` (tab-separated: index, name, module, format, state)
+ * and returns whether a sink with exactly the given name exists.
+ * Pure function.
+ */
+export function shortSinksContainsName(raw: string, sinkName: string): boolean {
+    if (!raw) return false;
+    return raw.split(/\r?\n/).some(line => line.split("\t")[1] === sinkName);
+}
+
+/**
  * Parses `pactl list sinks` (verbose) output and returns the module id that
  * owns the sink with the given name, or null if no such sink exists.
  * Pure function.
@@ -82,11 +92,14 @@ export function findModuleIdsByArgument(raw: string, needle: string): string[] {
 
     const blocks = raw.split(/\r?\n(?=Module #)/g);
     const ids: string[] = [];
+    // Match needle as a whole token (bounded by start/whitespace and end/whitespace)
+    // so e.g. "source=Foo.monitor" doesn't false-positive on "source=FooBar.monitor".
+    const needleRegex = new RegExp(`(?:^|\\s)${escapeRegExp(needle)}(?:\\s|$)`);
 
     for (const block of blocks) {
         const argMatch = block.match(/Argument:\s*(.*)/);
         if (!argMatch) continue;
-        if (!argMatch[1].includes(needle)) continue;
+        if (!needleRegex.test(argMatch[1])) continue;
 
         const idMatch = block.match(/Module #(\d+)/);
         if (idMatch) ids.push(idMatch[1]);
@@ -129,7 +142,7 @@ export async function listAudioApps(): Promise<AudioApp[]> {
 
 async function sinkExists(): Promise<boolean> {
     const raw = await pactl(["list", "short", "sinks"]);
-    return raw.split("\n").some(line => line.includes(VIRTUAL_SINK_NAME));
+    return shortSinksContainsName(raw, VIRTUAL_SINK_NAME);
 }
 
 async function ensureVirtualSink(): Promise<void> {

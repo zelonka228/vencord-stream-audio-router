@@ -13,7 +13,8 @@ import assert from "node:assert/strict";
 import {
     findModuleIdsByArgument,
     findOwnerModuleOfSink,
-    parseSinkInputs
+    parseSinkInputs,
+    shortSinksContainsName
 } from "../streamAudioRouter/platform/linux.ts";
 
 let passed = 0;
@@ -216,6 +217,15 @@ Module #1
     assert.deepEqual(findModuleIdsByArgument(raw, "source=VencordStreamMix.monitor"), []);
 });
 
+test("does not false-positive on an argument that is a prefix of another module's argument", () => {
+    const raw = `
+Module #1
+	Argument: source=VencordStreamMixExtra.monitor sink=A
+`.trim();
+
+    assert.deepEqual(findModuleIdsByArgument(raw, "source=VencordStreamMix.monitor"), []);
+});
+
 test("handles modules with no Argument line at all", () => {
     const raw = `
 Module #1
@@ -223,6 +233,24 @@ Module #1
 `.trim();
 
     assert.deepEqual(findModuleIdsByArgument(raw, "anything"), []);
+});
+
+// ---------------------------------------------------------------------------
+
+console.log("shortSinksContainsName");
+
+test("finds an exact name match in short sink listing", () => {
+    const raw = "1\tVencordStreamMix\t5\tfloat32le 2ch 48000Hz\tRUNNING\n2\talsa_output.pci\t3\tfloat32le 2ch 48000Hz\tIDLE";
+    assert.equal(shortSinksContainsName(raw, "VencordStreamMix"), true);
+});
+
+test("does not match a name that only contains the target as a substring", () => {
+    const raw = "1\tVencordStreamMixBackup\t5\tfloat32le 2ch 48000Hz\tRUNNING";
+    assert.equal(shortSinksContainsName(raw, "VencordStreamMix"), false);
+});
+
+test("returns false for empty input", () => {
+    assert.equal(shortSinksContainsName("", "VencordStreamMix"), false);
 });
 
 // ---------------------------------------------------------------------------

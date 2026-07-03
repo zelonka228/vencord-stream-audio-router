@@ -25,6 +25,8 @@
  */
 
 import { definePluginSettings } from "@api/Settings";
+import { Divider } from "@components/Divider";
+import { Margins } from "@utils/margins";
 import definePlugin, { PluginNative } from "@utils/types";
 import { Button, Forms, Select, Toasts, useEffect, useState } from "@webpack/common";
 
@@ -42,10 +44,13 @@ function notifySuccess(message: string) {
     });
 }
 
+function errorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
+
 function notifyError(err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
     Toasts.show({
-        message,
+        message: errorMessage(err),
         id: Toasts.genId(),
         type: Toasts.Type.FAILURE
     });
@@ -55,17 +60,23 @@ function LinuxPanel() {
     const [apps, setApps] = useState<AudioApp[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
 
     async function refresh() {
         setBusy(true);
+        setLoadError(null);
         try {
             const list = await Native.linuxListAudioApps();
             setApps(list);
-            if (list.length > 0 && !list.some(a => a.id === selectedId)) {
-                setSelectedId(list[0].id);
-            }
+            setSelectedId(prev => {
+                if (list.length === 0) return null;
+                if (prev && list.some(a => a.id === prev)) return prev;
+                return list[0].id;
+            });
         } catch (e) {
-            notifyError(e);
+            setLoadError(errorMessage(e));
+            setApps([]);
+            setSelectedId(null);
         } finally {
             setBusy(false);
         }
@@ -105,28 +116,38 @@ function LinuxPanel() {
             <Forms.FormText>
                 Pick the app whose audio Discord should hear, then click Route. Share your game/window as normal afterwards - the audio stays independent of whatever window you share.
             </Forms.FormText>
-            <Forms.FormDivider className="vc-sar-divider" />
-            {apps.length === 0 && (
-                <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
+            <Divider className={Margins.top16} />
+
+            {loadError && (
+                <Forms.FormText className={Margins.top8} style={{ color: "var(--text-danger)" }}>
+                    {loadError}
+                </Forms.FormText>
+            )}
+
+            {!loadError && apps.length === 0 && (
+                <Forms.FormText className={Margins.top8}>
                     {busy ? "Loading audio apps..." : "No apps are currently playing audio. Start playback in the app you want (e.g. your browser), then click Refresh."}
                 </Forms.FormText>
             )}
+
             {apps.length > 0 && (
                 <Select
+                    className={Margins.top8}
                     options={apps.map(a => ({ label: a.name, value: a.id }))}
                     isSelected={v => v === selectedId}
                     select={v => setSelectedId(v)}
-                    serialize={String}
+                    serialize={v => v}
                 />
             )}
-            <Forms.FormDivider className="vc-sar-divider" />
-            <Button onClick={refresh} disabled={busy} color={Button.Colors.PRIMARY} className="vc-sar-btn">
+
+            <Divider className={Margins.top16} />
+            <Button onClick={refresh} disabled={busy} color={Button.Colors.PRIMARY} className={Margins.top8}>
                 Refresh app list
             </Button>
-            <Button onClick={handleRoute} disabled={busy || !selectedId} color={Button.Colors.GREEN} className="vc-sar-btn">
+            <Button onClick={handleRoute} disabled={busy || !selectedId} color={Button.Colors.GREEN} className={Margins.top8}>
                 Route selected app's audio
             </Button>
-            <Button onClick={handleRestore} disabled={busy} color={Button.Colors.RED} className="vc-sar-btn">
+            <Button onClick={handleRestore} disabled={busy} color={Button.Colors.RED} className={Margins.top8}>
                 Reset to normal audio
             </Button>
         </>
@@ -137,13 +158,13 @@ function WindowsPanel() {
     return (
         <>
             <Forms.FormText>
-                Windows already supports per-app output devices natively - no extra software needed. Click below to open the exact settings page, then set your game to your headphones/speakers and your browser to a separate device (or vice versa), and pick that same device as Discord's Input Device via a virtual cable if you want it captured, or simply share your desktop audio while only the browser plays through the default device.
+                Windows already supports per-app output devices natively - no extra software needed. Open the settings page below, then set your game to your headphones/speakers and point the app whose audio you want Discord to hear at a separate device (e.g. a virtual cable such as VB-Cable), and pick that same device as Discord's Input Device.
             </Forms.FormText>
-            <Forms.FormDivider className="vc-sar-divider" />
+            <Divider className={Margins.top16} />
             <Button
                 onClick={() => Native.windowsOpenAppVolumeSettings().catch(notifyError)}
                 color={Button.Colors.PRIMARY}
-                className="vc-sar-btn"
+                className={Margins.top8}
             >
                 Open "App volume and device preferences"
             </Button>
@@ -163,31 +184,32 @@ function MacPanel() {
             <Forms.FormText>
                 macOS has no built-in per-app audio routing. The standard free solution is BlackHole, a virtual audio driver.
             </Forms.FormText>
-            <Forms.FormDivider className="vc-sar-divider" />
-            {installed === null && <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>Checking for BlackHole...</Forms.FormText>}
+            <Divider className={Margins.top16} />
+
+            {installed === null && <Forms.FormText className={Margins.top8}>Checking for BlackHole...</Forms.FormText>}
             {installed === false && (
-                <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
-                    BlackHole not found. Install it with Homebrew, then restart Discord:
-                    {" "}<code>brew install blackhole-2ch</code>
+                <Forms.FormText className={Margins.top8}>
+                    BlackHole not found. Install it with Homebrew, then restart Discord: <code>brew install blackhole-2ch</code>
                 </Forms.FormText>
             )}
             {installed === true && (
-                <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
+                <Forms.FormText className={Margins.top8}>
                     BlackHole is installed. Open Audio MIDI Setup to build a Multi-Output Device (BlackHole + your speakers), then in the app whose audio you want to share, pick BlackHole as its output device. Set Discord's Input Device to BlackHole.
                 </Forms.FormText>
             )}
-            <Forms.FormDivider className="vc-sar-divider" />
+
+            <Divider className={Margins.top16} />
             <Button
                 onClick={() => Native.macosOpenAudioMidiSetup().catch(notifyError)}
                 color={Button.Colors.PRIMARY}
-                className="vc-sar-btn"
+                className={Margins.top8}
             >
                 Open Audio MIDI Setup
             </Button>
             <Button
                 onClick={() => Native.macosOpenSoundSettings().catch(notifyError)}
                 color={Button.Colors.PRIMARY}
-                className="vc-sar-btn"
+                className={Margins.top8}
             >
                 Open Sound Settings
             </Button>
@@ -213,9 +235,9 @@ const settings = definePluginSettings({});
 export default definePlugin({
     name: "StreamAudioRouter",
     description: "Screen-share one app/window while Discord captures a different app's audio (e.g. share a game, stream your browser's music).",
-    tags: ["Voice", "StreamAudio", "ScreenShare"],
+    tags: ["Voice", "Media"],
     authors: [
-        { name: "you", id: 0n }
+        { name: "zelonka228", id: 0n }
     ],
 
     settings,
@@ -223,13 +245,13 @@ export default definePlugin({
     settingsAboutComponent: SettingsPanel,
 
     async stop() {
-        // Best-effort cleanup so leaving the plugin enabled/disabled toggle never
-        // leaves the user's system audio silently rerouted.
+        // Best-effort cleanup so toggling the plugin off never leaves the
+        // user's system audio silently rerouted.
         try {
             const platform = await Native.getPlatform();
             if (platform === "linux") await Native.linuxRestoreAudio();
         } catch {
-            // Nothing we can usefully do here - surfacing an error on plugin
+            // Nothing useful to do here - surfacing an error on plugin
             // disable would be more confusing than silent best-effort cleanup.
         }
     }
