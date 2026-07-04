@@ -42,15 +42,23 @@ import { Margins } from "@utils/margins";
 import definePlugin, { PluginNative } from "@utils/types";
 import { RenderModalProps } from "@vencord/discord-types";
 import { findComponentByCodeLazy } from "@webpack";
-import { Button, Forms, Modal, openModal, Select, Toasts, useEffect, useState } from "@webpack/common";
+import { Button, Forms, LocaleStore, Menu, Modal, openModal, Select, Toasts, useEffect, useState, useStateFromStores } from "@webpack/common";
 
 import type { AudioApp } from "./platform/linux";
+import { format, Locale, strings } from "./strings";
 
 // The round icon button used next to Mute/Deafen in the account panel -
 // same lookup used by Vencord's own GameActivityToggle plugin.
 const AccountPanelButton = findComponentByCodeLazy(".GREEN,positionKeyStemOverride:");
 
 const Native = VencordNative.pluginHelpers.StreamAudioRouter as PluginNative<typeof import("./native")>;
+
+/** Follows Discord's own display language - switches this plugin's UI the moment the user changes it in Discord. */
+function useT() {
+    const locale = useStateFromStores([LocaleStore], () => LocaleStore.locale);
+    const key: Locale = locale?.toLowerCase().startsWith("ru") ? "ru" : "en";
+    return strings[key];
+}
 
 function notifySuccess(message: string) {
     Toasts.show({
@@ -73,6 +81,7 @@ function notifyError(err: unknown) {
 }
 
 function LinuxPanel() {
+    const t = useT();
     const [apps, setApps] = useState<AudioApp[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
@@ -105,9 +114,7 @@ function LinuxPanel() {
         setBusy(true);
         try {
             await Native.linuxExcludeAppAudio(selectedId);
-            notifySuccess(
-                "Done. Enable Discord's own \"Share Audio\" toggle when you start your screen share - it'll only pick up whatever's left on your default output. Your mic is untouched."
-            );
+            notifySuccess(t.linuxExcludeSuccess);
         } catch (e) {
             notifyError(e);
         } finally {
@@ -119,7 +126,7 @@ function LinuxPanel() {
         setBusy(true);
         try {
             await Native.linuxRestoreAudio();
-            notifySuccess("Audio routing reset back to normal.");
+            notifySuccess(t.linuxRestoreSuccess);
         } catch (e) {
             notifyError(e);
         } finally {
@@ -130,7 +137,7 @@ function LinuxPanel() {
     return (
         <>
             <Forms.FormText>
-                Pick the app you DON'T want Discord to hear (e.g. your game), then click Exclude. It keeps playing normally through your speakers - it's just taken off the system default output, which is what Discord's "Share Audio" screen-share toggle captures. Everything else (e.g. your browser) is what gets streamed. Your microphone is never touched.
+                {t.linuxDescription}
             </Forms.FormText>
             <Divider className={Margins.top16} />
 
@@ -142,7 +149,7 @@ function LinuxPanel() {
 
             {!loadError && apps.length === 0 && (
                 <Forms.FormText className={Margins.top8}>
-                    {busy ? "Loading audio apps..." : "No apps are currently playing audio. Start playback in the app you want to exclude (e.g. your game), then click Refresh."}
+                    {busy ? t.linuxLoadingApps : t.linuxNoApps}
                 </Forms.FormText>
             )}
 
@@ -158,23 +165,24 @@ function LinuxPanel() {
 
             <Divider className={Margins.top16} />
             <Button onClick={refresh} disabled={busy} color={Button.Colors.PRIMARY} className={Margins.top8}>
-                Refresh app list
+                {t.linuxRefreshButton}
             </Button>
             <Button onClick={handleExclude} disabled={busy || !selectedId} color={Button.Colors.GREEN} className={Margins.top8}>
-                Exclude selected app from stream audio
+                {t.linuxExcludeButton}
             </Button>
             <Button onClick={handleRestore} disabled={busy} color={Button.Colors.RED} className={Margins.top8}>
-                Include back / reset to normal
+                {t.linuxRestoreButton}
             </Button>
         </>
     );
 }
 
 function WindowsPanel() {
+    const t = useT();
     return (
         <>
             <Forms.FormText>
-                Windows already supports per-app output devices natively - no extra software needed. Open the settings page below, pin your game to your headphones/speakers directly (choose a specific device instead of "Default"), and leave the app you want Discord to hear (e.g. your browser) on "Default". Then, when you start your screen share, enable Discord's own "Share Audio" / "Stream With Audio" checkbox - it captures the default device, which is now just your browser. Your microphone is untouched, so voice chat keeps working normally.
+                {t.windowsDescription}
             </Forms.FormText>
             <Divider className={Margins.top16} />
             <Button
@@ -182,13 +190,14 @@ function WindowsPanel() {
                 color={Button.Colors.PRIMARY}
                 className={Margins.top8}
             >
-                Open "App volume and device preferences"
+                {t.windowsOpenSettingsButton}
             </Button>
         </>
     );
 }
 
 function MacPanel() {
+    const t = useT();
     const [installed, setInstalled] = useState<boolean | null>(null);
 
     useEffect(() => {
@@ -198,19 +207,19 @@ function MacPanel() {
     return (
         <>
             <Forms.FormText>
-                macOS has no per-app default output device, and most games don't expose their own output picker - so the reliable lever here is redirecting the app you DO want Discord to hear (usually your browser, since many browsers let you pick a playback device). The standard free tool for that is BlackHole, a virtual audio driver.
+                {t.macDescription}
             </Forms.FormText>
             <Divider className={Margins.top16} />
 
-            {installed === null && <Forms.FormText className={Margins.top8}>Checking for BlackHole...</Forms.FormText>}
+            {installed === null && <Forms.FormText className={Margins.top8}>{t.macChecking}</Forms.FormText>}
             {installed === false && (
                 <Forms.FormText className={Margins.top8}>
-                    BlackHole not found. Install it with Homebrew, then restart Discord: <code>brew install blackhole-2ch</code>
+                    {t.macNotFoundPrefix}<code>brew install blackhole-2ch</code>
                 </Forms.FormText>
             )}
             {installed === true && (
                 <Forms.FormText className={Margins.top8}>
-                    BlackHole is installed. Open Audio MIDI Setup to build a Multi-Output Device (BlackHole + your speakers) so you still hear it locally, then in your browser's own output picker choose that Multi-Output Device. Finally, make that same device your Mac's system default output (Sound Settings), and enable Discord's "Share Audio" toggle when screen sharing - it captures the default output, i.e. your browser. Your microphone stays completely separate.
+                    {t.macInstalled}
                 </Forms.FormText>
             )}
 
@@ -220,30 +229,31 @@ function MacPanel() {
                 color={Button.Colors.PRIMARY}
                 className={Margins.top8}
             >
-                Open Audio MIDI Setup
+                {t.macOpenAudioMidiButton}
             </Button>
             <Button
                 onClick={() => Native.macosOpenSoundSettings().catch(notifyError)}
                 color={Button.Colors.PRIMARY}
                 className={Margins.top8}
             >
-                Open Sound Settings
+                {t.macOpenSoundSettingsButton}
             </Button>
         </>
     );
 }
 
 function SettingsPanel() {
+    const t = useT();
     const [platform, setPlatform] = useState<string | null>(null);
 
     useEffect(() => { Native.getPlatform().then(setPlatform); }, []);
 
-    if (platform === null) return <Forms.FormText>Detecting platform...</Forms.FormText>;
+    if (platform === null) return <Forms.FormText>{t.detectingPlatform}</Forms.FormText>;
     if (platform === "linux") return <LinuxPanel />;
     if (platform === "win32") return <WindowsPanel />;
     if (platform === "darwin") return <MacPanel />;
 
-    return <Forms.FormText>Unsupported platform: {platform}</Forms.FormText>;
+    return <Forms.FormText>{format(t.unsupportedPlatform, { platform: platform ?? "" })}</Forms.FormText>;
 }
 
 function RouterIcon() {
@@ -308,8 +318,15 @@ export default definePlugin({
 
     AccountPanelToolButton,
 
-    toolboxActions: {
-        "Open StreamAudioRouter": openRouterModal
+    toolboxActions() {
+        const t = useT();
+        return (
+            <Menu.MenuItem
+                id="stream-audio-router-open"
+                label={t.toolboxAction}
+                action={openRouterModal}
+            />
+        );
     },
 
     async stop() {

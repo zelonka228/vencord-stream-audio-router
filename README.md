@@ -67,7 +67,7 @@ and hearing other people in the call works exactly as it always has.
 
 #### Linux walkthrough
 
-1. Open **Vencord Settings → Plugins → StreamAudioRouter**.
+1. Open the plugin (see [Interface](#interface) below for three ways to get there - Settings, a button next to Mute/Deafen, or Vencord's Toolbox menu).
 2. Play audio in the app you *don't* want Discord to hear (e.g. start your game).
 3. Click **Refresh app list**, select that app, click **Exclude selected app from stream audio**.
 4. Start your screen share as usual (share the game window/screen).
@@ -80,6 +80,24 @@ output (so you still hear it locally). "Reset" looks modules up **by
 name**, not remembered IDs, so it recovers correctly even after a Discord
 restart mid-session — and PulseAudio automatically reassigns the excluded
 app back to the default output the moment the sink is torn down.
+
+### Interface
+
+There are three ways to reach the plugin's panel - pick whichever is fastest for you:
+
+1. **Vencord Settings → Plugins → StreamAudioRouter** - click the plugin's name/gear icon (the full panel described below).
+2. **A round button next to Mute/Deafen**, at the bottom-left of the Discord window, right by your account row. One click opens the same panel in a small popup, without leaving whatever you're doing.
+3. **Vencord's own Toolbox menu** (the icon that looks like a grid/funnel in the top titlebar, if you have the `VencordToolbox` plugin enabled) - an "Open StreamAudioRouter" entry appears there too.
+
+The panel itself, on Linux, has:
+- A **dropdown** listing every app currently playing audio (refreshes on open).
+- **Refresh app list** - re-scans for apps playing audio right now (PulseAudio only reports apps that are *actively* producing sound, so if the app you want isn't listed, make sure it's actually playing something first).
+- **Exclude selected app from stream audio** (green) - moves the selected app off the default output, as described above.
+- **Include back / reset to normal** (red) - undoes it, whether you excluded one app or several in a row.
+
+On Windows and macOS the panel instead shows OS-specific buttons that open the relevant system settings (see the per-OS walkthroughs above) - there's no dropdown there, since routing on those OSes has to be done in the OS's own settings, not through PulseAudio.
+
+The panel's text automatically follows **Discord's own display language** - if Discord is set to Russian, the plugin's UI shows in Russian; any other language shows English. There's no separate language setting for the plugin itself.
 
 #### Windows walkthrough
 
@@ -161,10 +179,34 @@ pnpm build
 pnpm inject
 ```
 
+`pnpm inject` downloads a small CLI tool and asks which Discord install to
+patch (arrow keys + Enter). Pick the one matching what you actually use
+(Stable/PTB/Canary). It's safe to run again any time - it detects an
+existing patch and reapplies it.
+
 Or grab `streamAudioRouter.zip` from [Releases](../../releases), extract it
 into `Vencord/src/userplugins/`, then `pnpm build && pnpm inject`.
 
-Restart Discord and enable **StreamAudioRouter** under Vencord Settings → Plugins.
+#### 4. Restart Discord and enable the plugin
+
+A normal window close isn't enough - Discord needs to fully reload the
+patched code:
+
+```bash
+killall Discord        # or: killall DiscordCanary / DiscordPTB, matching what you patched
+discord                # relaunches it (or open it from your app menu)
+```
+
+Then: **Settings → Vencord → Plugins**, search for `StreamAudioRouter`,
+flip the toggle on. If Discord asks for a restart to apply it, let it -
+that's normal for plugins that patch Discord's own UI (this one adds a
+button next to Mute/Deafen, which needs a reload to attach).
+
+**Troubleshooting - plugin not appearing in the list at all:** double-check
+`src/userplugins/streamAudioRouter/index.tsx` actually exists (not nested
+one level deeper, e.g. `.../streamAudioRouter/streamAudioRouter/index.tsx`
+- that would mean the wrong thing got cloned into the wrong folder), then
+re-run `pnpm build && pnpm inject` and fully restart Discord again.
 
 ### Repo layout
 
@@ -274,7 +316,7 @@ Discord должен слышать музыку из браузера, а не 
 
 #### Инструкция для Linux
 
-1. Открой **Настройки Vencord → Plugins → StreamAudioRouter**.
+1. Открой панель плагина (см. раздел [Интерфейс](#интерфейс) ниже — есть три способа туда попасть: настройки, кнопка у микрофона/наушников, или меню Toolbox).
 2. Запусти звук в приложении, которое **не** хочешь, чтобы слышал Discord (например, запусти игру).
 3. Нажми **Refresh app list**, выбери это приложение, нажми **Exclude selected app from stream audio**.
 4. Запусти демонстрацию экрана как обычно (окно/экран игры).
@@ -288,6 +330,24 @@ Discord должен слышать музыку из браузера, а не 
 восстанавливает состояние даже после перезапуска Discord посреди сессии, а
 PulseAudio сам возвращает исключённое приложение обратно на вывод по
 умолчанию в момент удаления sink.
+
+### Интерфейс
+
+Есть три способа открыть панель плагина — выбирай, что быстрее:
+
+1. **Настройки Vencord → Plugins → StreamAudioRouter** — клик по названию плагина/значку шестерёнки (полная панель, описана ниже).
+2. **Круглая кнопка рядом с микрофоном/наушниками** внизу слева окна Discord, прямо у твоего профиля. Один клик открывает ту же панель во всплывающем окне, не отвлекаясь от того, чем занят.
+3. **Собственное меню Toolbox от Vencord** (значок в виде сетки/воронки в верхней панели окна, если у тебя включён плагин `VencordToolbox`) — там тоже появляется пункт "Open StreamAudioRouter".
+
+Сама панель на Linux состоит из:
+- **Выпадающего списка** со всеми приложениями, которые сейчас воспроизводят звук (обновляется при открытии).
+- **Refresh app list** — заново сканирует, какие приложения играют звук прямо сейчас (PulseAudio показывает только те, что **активно** производят звук в данный момент — если нужного приложения нет в списке, убедись, что в нём реально сейчас что-то играет).
+- **Exclude selected app from stream audio** (зелёная) — убирает выбранное приложение с вывода по умолчанию, как описано выше.
+- **Include back / reset to normal** (красная) — откатывает всё обратно, независимо от того, исключил ты одно приложение или несколько подряд.
+
+На Windows и macOS вместо этого показываются кнопки, специфичные для ОС, которые открывают нужные системные настройки (см. инструкции выше по каждой ОС) — там нет выпадающего списка, поскольку маршрутизация на этих системах делается через настройки самой ОС, а не через PulseAudio.
+
+Текст в панели автоматически подстраивается под **язык интерфейса самого Discord** — если в Discord выбран русский, плагин тоже покажет русский текст; при любом другом языке — английский. Отдельной настройки языка у самого плагина нет.
 
 #### Инструкция для Windows
 
@@ -369,10 +429,37 @@ pnpm build
 pnpm inject
 ```
 
+`pnpm inject` скачает небольшую CLI-утилиту и спросит, какую установку
+Discord патчить (стрелки + Enter) — выбери ту версию, которой реально
+пользуешься (Stable/PTB/Canary). Команду можно безопасно запускать
+повторно в любой момент — она сама определит, что патч уже стоит, и
+переустановит его.
+
 Либо скачай `streamAudioRouter.zip` со страницы [Releases](../../releases),
 распакуй в `Vencord/src/userplugins/`, затем `pnpm build && pnpm inject`.
 
-Перезапусти Discord и включи **StreamAudioRouter** в Vencord Settings → Plugins.
+#### 4. Перезапусти Discord и включи плагин
+
+Обычного закрытия окна недостаточно — Discord должен полностью
+перезагрузить пропатченный код:
+
+```bash
+killall Discord         # или killall DiscordCanary / DiscordPTB — смотря что патчил
+discord                 # запускает заново (или через меню приложений)
+```
+
+Дальше: **Настройки → Vencord → Plugins**, найди `StreamAudioRouter` через
+поиск, включи тумблер. Если Discord попросит перезапуск, чтобы применить
+изменения — соглашайся, это нормально для плагинов, которые патчат UI
+самого Discord (этот добавляет кнопку рядом с микрофоном/наушниками, для
+которой нужна перезагрузка, чтобы она прикрепилась).
+
+**Если плагин вообще не появляется в списке:** проверь, что
+`src/userplugins/streamAudioRouter/index.tsx` лежит именно там (а не на
+уровень глубже, например
+`.../streamAudioRouter/streamAudioRouter/index.tsx` — это значит, что не
+туда склонировалось не то), затем заново `pnpm build && pnpm inject` и
+полный перезапуск Discord.
 
 ### Структура репозитория
 
