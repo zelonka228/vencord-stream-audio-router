@@ -44,7 +44,8 @@ import { RenderModalProps } from "@vencord/discord-types";
 import { findComponentByCodeLazy } from "@webpack";
 import { Button, Forms, LocaleStore, Menu, Modal, openModal, Select, Toasts, useEffect, useState, useStateFromStores } from "@webpack/common";
 
-import type { AudioApp } from "./platform/linux";
+import type { AudioApp as LinuxAudioApp } from "./platform/linux";
+import type { AudioApp as WindowsAudioApp } from "./platform/windows";
 import { format, Locale, strings } from "./strings";
 
 // The round icon button used next to Mute/Deafen in the account panel -
@@ -82,7 +83,7 @@ function notifyError(err: unknown) {
 
 function LinuxPanel() {
     const t = useT();
-    const [apps, setApps] = useState<AudioApp[]>([]);
+    const [apps, setApps] = useState<LinuxAudioApp[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -179,12 +180,102 @@ function LinuxPanel() {
 
 function WindowsPanel() {
     const t = useT();
+    const [apps, setApps] = useState<WindowsAudioApp[]>([]);
+    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
+
+    async function refresh() {
+        setBusy(true);
+        setLoadError(null);
+        try {
+            const list = await Native.windowsListAudioApps();
+            setApps(list);
+            setSelectedId(prev => {
+                if (list.length === 0) return null;
+                if (prev && list.some(a => a.id === prev)) return prev;
+                return list[0].id;
+            });
+        } catch (e) {
+            setLoadError(errorMessage(e));
+            setApps([]);
+            setSelectedId(null);
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    useEffect(() => { refresh(); }, []);
+
+    async function handleExclude() {
+        if (!selectedId) return;
+        setBusy(true);
+        try {
+            await Native.windowsExcludeAppAudio(selectedId);
+            notifySuccess(t.windowsExcludeSuccess);
+        } catch (e) {
+            notifyError(e);
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function handleRestore() {
+        setBusy(true);
+        try {
+            await Native.windowsRestoreAudio();
+            notifySuccess(t.windowsRestoreSuccess);
+        } catch (e) {
+            notifyError(e);
+        } finally {
+            setBusy(false);
+        }
+    }
+
     return (
         <>
             <Forms.FormText>
                 {t.windowsDescription}
             </Forms.FormText>
             <Divider className={Margins.top16} />
+
+            {loadError && (
+                <Forms.FormText className={Margins.top8} style={{ color: "var(--text-danger)" }}>
+                    {loadError}
+                </Forms.FormText>
+            )}
+
+            {!loadError && apps.length === 0 && (
+                <Forms.FormText className={Margins.top8}>
+                    {busy ? t.windowsLoadingApps : t.windowsNoApps}
+                </Forms.FormText>
+            )}
+
+            {apps.length > 0 && (
+                <Select
+                    className={Margins.top8}
+                    options={apps.map(a => ({ label: a.name, value: a.id }))}
+                    isSelected={v => v === selectedId}
+                    select={v => setSelectedId(v)}
+                    serialize={v => v}
+                />
+            )}
+
+            <Divider className={Margins.top16} />
+            <Button onClick={refresh} disabled={busy} color={Button.Colors.PRIMARY} className={Margins.top8}>
+                {t.windowsRefreshButton}
+            </Button>
+            <Button onClick={handleExclude} disabled={busy || !selectedId} color={Button.Colors.GREEN} className={Margins.top8}>
+                {t.windowsExcludeButton}
+            </Button>
+            <Button onClick={handleRestore} disabled={busy} color={Button.Colors.RED} className={Margins.top8}>
+                {t.windowsRestoreButton}
+            </Button>
+
+            <Divider className={Margins.top16} />
+            <Forms.FormText className={Margins.top8}>
+                {t.windowsManualFallbackLabel}
+            </Forms.FormText>
             <Button
                 onClick={() => Native.windowsOpenAppVolumeSettings().catch(notifyError)}
                 color={Button.Colors.PRIMARY}
@@ -335,6 +426,7 @@ export default definePlugin({
         try {
             const platform = await Native.getPlatform();
             if (platform === "linux") await Native.linuxRestoreAudio();
+            if (platform === "win32") await Native.windowsRestoreAudio();
         } catch {
             // Nothing useful to do here - surfacing an error on plugin
             // disable would be more confusing than silent best-effort cleanup.

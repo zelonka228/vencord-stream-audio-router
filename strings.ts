@@ -25,7 +25,15 @@ export const strings = {
         linuxExcludeSuccess: "Done. Enable Discord's own \"Share Audio\" toggle when you start your screen share - it'll only pick up whatever's left on your default output. Your mic is untouched.",
         linuxRestoreSuccess: "Audio routing reset back to normal.",
 
-        windowsDescription: "Windows already supports per-app output devices natively - no extra software needed. Open the settings page below, pin your game to your headphones/speakers directly (choose a specific device instead of \"Default\"), and leave the app you want Discord to hear (e.g. your browser) on \"Default\". Then, when you start your screen share, enable Discord's own \"Share Audio\" / \"Stream With Audio\" checkbox - it captures the default device, which is now just your browser. Your microphone is untouched, so voice chat keeps working normally.",
+        windowsDescription: "Pick the app you DON'T want Discord to hear (e.g. your game), then click Exclude. Windows has no built-in virtual audio device, so this only works if you have at least two real playback devices (e.g. speakers + a headset) - it moves the app to whichever one isn't your current default, so you can still hear it on that device. Your microphone is never touched.",
+        windowsLoadingApps: "Loading audio apps...",
+        windowsNoApps: "No apps are currently playing audio. Start playback in the app you want to exclude (e.g. your game), then click Refresh.",
+        windowsRefreshButton: "Refresh app list",
+        windowsExcludeButton: "Exclude selected app from stream audio",
+        windowsRestoreButton: "Include back / reset to normal",
+        windowsExcludeSuccess: "Done. Enable Discord's own \"Share Audio\" toggle when you start your screen share - it'll only pick up whatever's left on your default device. Your mic is untouched.",
+        windowsRestoreSuccess: "Audio routing reset back to normal.",
+        windowsManualFallbackLabel: "Prefer to do it yourself instead? Open Windows' own settings page:",
         windowsOpenSettingsButton: "Open \"App volume and device preferences\"",
 
         macDescription: "macOS has no per-app default output device, and most games don't expose their own output picker - so the reliable lever here is redirecting the app you DO want Discord to hear (usually your browser, since many browsers let you pick a playback device). The standard free tool for that is BlackHole, a virtual audio driver.",
@@ -50,7 +58,15 @@ export const strings = {
         linuxExcludeSuccess: "Готово. Включи штатный тумблер Discord «Share Audio», когда начнёшь демонстрацию экрана — он захватит только то, что осталось на выводе по умолчанию. Микрофон не тронут.",
         linuxRestoreSuccess: "Маршрутизация звука сброшена к обычному состоянию.",
 
-        windowsDescription: "В Windows уже есть встроенный выбор устройства вывода для каждого приложения — ничего дополнительно ставить не нужно. Открой страницу настроек ниже, закрепи игру за наушниками/колонками напрямую (выбери конкретное устройство вместо «По умолчанию»), а приложение, звук которого должен слышать Discord (например, браузер), оставь на «По умолчанию». Затем при демонстрации экрана включи штатный чекбокс Discord «Share Audio» / «Demonstrate audio» — он захватит устройство по умолчанию, то есть теперь только браузер. Микрофон не трогается, голосовой чат работает как обычно.",
+        windowsDescription: "Выбери приложение, звук которого НЕ должен попасть в трансляцию (например, игру), и нажми «Исключить». В Windows нет встроенного виртуального аудио-устройства, поэтому это работает только если у тебя есть минимум два реальных устройства вывода (например, колонки + гарнитура) — приложение переносится на то, которое сейчас не является устройством по умолчанию, так что ты всё ещё услышишь его через него. Микрофон никогда не трогается.",
+        windowsLoadingApps: "Загрузка списка приложений...",
+        windowsNoApps: "Сейчас ни одно приложение не воспроизводит звук. Запусти звук в приложении, которое хочешь исключить (например, в игре), затем нажми «Обновить список».",
+        windowsRefreshButton: "Обновить список приложений",
+        windowsExcludeButton: "Исключить выбранное приложение из звука трансляции",
+        windowsRestoreButton: "Вернуть как было",
+        windowsExcludeSuccess: "Готово. Включи штатный тумблер Discord «Share Audio», когда начнёшь демонстрацию экрана — он захватит только то, что осталось на устройстве по умолчанию. Микрофон не тронут.",
+        windowsRestoreSuccess: "Маршрутизация звука сброшена к обычному состоянию.",
+        windowsManualFallbackLabel: "Предпочитаешь сделать вручную? Открой штатную страницу настроек Windows:",
         windowsOpenSettingsButton: "Открыть «Громкость приложений и параметры устройств»",
 
         macDescription: "В macOS нет вывода по умолчанию для отдельных приложений, а у большинства игр нет собственного выбора устройства вывода — поэтому надёжнее перенаправить именно то приложение, звук которого нужен Discord (обычно браузер, так как у браузеров чаще есть свой выбор устройства воспроизведения). Стандартный бесплатный инструмент для этого — BlackHole, виртуальный аудио-драйвер.",

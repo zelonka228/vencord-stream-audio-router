@@ -2,31 +2,290 @@
  * StreamAudioRouter for Vencord
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Windows backend.
- *
- * Honest scope note: Windows has no public, dependency-free API that lets an
- * Electron/Node process silently reassign a single running app's audio
- * output device. Windows 10 (1803+) and Windows 11 DO ship this feature
- * natively though - "App volume and device preferences" - it lets you pin
- * any running app to a specific output/input device, and Windows remembers
- * the choice per-app afterwards. So instead of reimplementing that badly
- * with a bundled native addon, this backend just opens that exact settings
- * page for the user via the `ms-settings:` URI scheme, which every Windows
- * 10/11 install supports out of the box - no extra installs required.
+ * Windows backend. Windows has no built-in tool or public API that lets a
+ * script silently reassign one running app's audio output device - the
+ * "App volume and device preferences" panel is backed by an undocumented
+ * mechanism Microsoft never published. So this backend automates it the
+ * same way Microsoft's own Settings app effectively does under the hood,
+ * by driving SoundVolumeCommandLine (svcl.exe) - a small, long-standing,
+ * free (though closed-source) utility from NirSoft built specifically for
+ * this - downloaded on first use directly from nirsoft.net, the same way
+ * Vencord's own installer downloads its CLI tool on demand.
  *
  * Same strategy as the Linux backend: move the app you DON'T want heard
- * (e.g. the game) to a non-default output device, leave everything you DO
- * want heard (e.g. the browser) on the system default, then use Discord's
- * own "Share Audio" screen-share toggle - it captures the default device.
- * The microphone is never touched, so voice chat is completely unaffected.
+ * (e.g. the game) off the system default output onto a different real
+ * output device, leave everything you DO want heard (e.g. the browser) on
+ * the default, then use Discord's own "Share Audio" screen-share toggle -
+ * it captures the default device. The microphone is never touched.
+ *
+ * Honest limitation: unlike Linux, Windows has no free built-in virtual
+ * audio device, so this only works if you actually have a second real
+ * playback device (e.g. speakers + a headset) - moving an app to a device
+ * you can't hear would silently mute it for you, which is worse than
+ * doing nothing. If only one device is found, excludeAppAudio() throws a
+ * clear error instead of guessing.
  */
 
-import { exec as execCb } from "child_process";
+import { exec as execCb, execFile } from "child_process";
+import { mkdir, writeFile } from "fs/promises";
+import { join } from "path";
 import { promisify } from "util";
 
 const exec = promisify(execCb);
+const execFileAsync = promisify(execFile);
 
-/** Opens Settings > System > Sound > "App volume and device preferences". */
+const SVCL_URL = "https://www.nirsoft.net/utils/svcl.zip";
+
+// `electron` is only resolvable inside a running Vencord/Discord process, so
+// it's imported lazily here (not at module top-level) - that keeps this
+// file's pure parsing functions loadable and unit-testable in plain Node.
+async function getSvclPaths(): Promise<{ dir: string; exe: string; }> {
+    const { app } = await import("electron");
+    const dir = join(app.getPath("userData"), "StreamAudioRouter");
+    return { dir, exe: join(dir, "svcl.exe") };
+}
+
+export interface AudioApp {
+    /** Process executable name, e.g. "chrome.exe" - what svcl.exe's /SetAppDefault expects. */
+    id: string;
+    name: string;
+}
+
+export interface RenderDevice {
+    /** svcl.exe's "Command-Line Friendly ID" for this device. */
+    id: string;
+    name: string;
+    isDefault: boolean;
+}
+
+/**
+ * Parses one line of svcl.exe's CSV export, handling comma-containing
+ * quoted fields (e.g. "11.10 dB, 11.10 dB"). Pure function.
+ */
+export function parseCsvLine(line: string): string[] {
+    const fields: string[] = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+
+        if (inQuotes) {
+            if (c === "\"" && line[i + 1] === "\"") {
+                current += "\"";
+                i++;
+            } else if (c === "\"") {
+                inQuotes = false;
+            } else {
+                current += c;
+            }
+        } else if (c === "\"") {
+            inQuotes = true;
+        } else if (c === ",") {
+            fields.push(current);
+            current = "";
+        } else {
+            current += c;
+        }
+    }
+    fields.push(current);
+
+    return fields;
+}
+
+export interface SvclRow {
+    name: string;
+    type: string;
+    direction: string;
+    deviceName: string;
+    isDefault: boolean;
+    deviceState: string;
+    commandLineFriendlyId: string;
+    processPath: string;
+}
+
+// Column order comes from svcl.exe's fixed CSV header:
+// Name,Type,Direction,Device Name,Default,Default Multimedia,Default
+// Communications,Device State,Muted,Volume dB,Volume Percent,Min Volume dB,
+// Max Volume dB,Volume Step,Channels Count,Channels dB,Channels  Percent,
+// Item ID,Command-Line Friendly ID,Process Path,Process ID,Window Title,
+// Registry Key,Speakers Config
+const COLUMN_INDEX = {
+    name: 0,
+    type: 1,
+    direction: 2,
+    deviceName: 3,
+    default: 4,
+    deviceState: 7,
+    commandLineFriendlyId: 18,
+    processPath: 19
+};
+
+/**
+ * Parses the full CSV export of `svcl.exe /scomma` into structured rows.
+ * Pure function - no side effects - so it can be unit tested without
+ * svcl.exe or any real audio devices.
+ */
+export function parseSvclCsv(raw: string): SvclRow[] {
+    if (!raw || !raw.trim()) return [];
+
+    // Strip a UTF-8 BOM if the caller didn't already (svcl.exe writes its
+    // CSV export as UTF-8 with BOM).
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length < 2) return [];
+
+    return lines.slice(1).map(line => {
+        const f = parseCsvLine(line);
+        return {
+            name: f[COLUMN_INDEX.name] ?? "",
+            type: f[COLUMN_INDEX.type] ?? "",
+            direction: f[COLUMN_INDEX.direction] ?? "",
+            deviceName: f[COLUMN_INDEX.deviceName] ?? "",
+            isDefault: (f[COLUMN_INDEX.default] ?? "").trim().length > 0,
+            deviceState: f[COLUMN_INDEX.deviceState] ?? "",
+            commandLineFriendlyId: f[COLUMN_INDEX.commandLineFriendlyId] ?? "",
+            processPath: f[COLUMN_INDEX.processPath] ?? ""
+        };
+    });
+}
+
+function basename(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path;
+}
+
+/**
+ * Extracts the list of apps currently playing audio from parsed svcl rows.
+ * Pure function.
+ */
+export function extractAudioApps(rows: SvclRow[]): AudioApp[] {
+    const seen = new Map<string, AudioApp>();
+
+    for (const row of rows) {
+        if (row.type !== "Application" || row.direction !== "Render") continue;
+        if (row.deviceState !== "Active") continue;
+
+        const id = row.processPath ? basename(row.processPath) : row.name;
+        if (!id || seen.has(id)) continue;
+
+        seen.set(id, { id, name: row.name || id });
+    }
+
+    return [...seen.values()];
+}
+
+/**
+ * Extracts real playback devices (not virtual "Subunit" entries) from
+ * parsed svcl rows. Pure function.
+ */
+export function extractRenderDevices(rows: SvclRow[]): RenderDevice[] {
+    return rows
+        .filter(row => row.type === "Device" && row.direction === "Render")
+        .map(row => ({
+            id: row.commandLineFriendlyId,
+            // row.name is the specific endpoint (e.g. "Headphones"); row.deviceName
+            // is the parent sound card/driver (e.g. "High Definition Audio Device") -
+            // multiple endpoints can share the same deviceName, so it's not unique enough.
+            name: row.name || row.deviceName,
+            isDefault: row.isDefault
+        }));
+}
+
+async function ensureSvcl(): Promise<string> {
+    const { dir, exe } = await getSvclPaths();
+    const { existsSync } = await import("fs");
+    if (existsSync(exe)) return exe;
+
+    const res = await fetch(SVCL_URL);
+    if (!res.ok) throw new Error(`Failed to download svcl.exe: ${res.status} ${res.statusText}`);
+
+    const zipBytes = new Uint8Array(await res.arrayBuffer());
+    const { unzipSync } = await import("fflate");
+    const files = unzipSync(zipBytes);
+
+    await mkdir(dir, { recursive: true });
+    for (const [name, data] of Object.entries(files)) {
+        await writeFile(join(dir, name), data);
+    }
+
+    if (!existsSync(exe)) throw new Error("svcl.exe was not found in the downloaded archive.");
+    return exe;
+}
+
+async function runSvcl(args: string[]): Promise<string> {
+    const exePath = await ensureSvcl();
+    try {
+        const { stdout } = await execFileAsync(exePath, args);
+        return stdout;
+    } catch (e: any) {
+        throw new Error(`svcl.exe ${args.join(" ")} failed: ${e?.message ?? e}`);
+    }
+}
+
+async function getRows(): Promise<SvclRow[]> {
+    const { mkdtemp, readFile, rm } = await import("fs/promises");
+    const { tmpdir } = await import("os");
+
+    const dir = await mkdtemp(join(tmpdir(), "vencord-svcl-"));
+    const csvPath = join(dir, "sessions.csv");
+    try {
+        await runSvcl(["/scomma", csvPath]);
+        const raw = await readFile(csvPath, "utf8");
+        return parseSvclCsv(raw);
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => { });
+    }
+}
+
+export async function listAudioApps(): Promise<AudioApp[]> {
+    const rows = await getRows();
+    return extractAudioApps(rows);
+}
+
+/** Remembers {process -> original device id} for apps we've excluded, so restore can undo precisely. */
+const excludedApps = new Map<string, string>();
+
+/**
+ * Moves the given app's audio output to a different real playback device
+ * than the current system default, so it's off whatever Discord's "Share
+ * Audio" captures. Requires at least 2 real playback devices - throws a
+ * clear error otherwise, since silently muting the app for the user would
+ * be worse than doing nothing.
+ */
+export async function excludeAppAudio(processId: string): Promise<void> {
+    if (!/^[\w.-]+\.exe$/i.test(processId)) throw new Error(`Invalid process id: ${JSON.stringify(processId)}`);
+
+    const rows = await getRows();
+    const devices = extractRenderDevices(rows);
+
+    const defaultDevice = devices.find(d => d.isDefault);
+    const alternateDevice = devices.find(d => !d.isDefault);
+
+    if (!defaultDevice || !alternateDevice) {
+        throw new Error(
+            "Only one playback device was found. Windows has no built-in virtual audio device, so there's " +
+            "nowhere to move this app's sound while still letting you hear it. Install a free virtual audio " +
+            "cable (e.g. VB-Audio Virtual Cable) to get a second destination, or use the settings page below manually."
+        );
+    }
+
+    if (!excludedApps.has(processId)) {
+        excludedApps.set(processId, defaultDevice.id);
+    }
+
+    await runSvcl(["/Stdout", "/SetAppDefault", alternateDevice.id, "all", processId]);
+}
+
+/** Moves every currently-excluded app back to the device it was on before. */
+export async function restoreAudio(): Promise<void> {
+    for (const [processId, originalDeviceId] of excludedApps) {
+        await runSvcl(["/Stdout", "/SetAppDefault", originalDeviceId, "all", processId]).catch(() => { });
+    }
+    excludedApps.clear();
+}
+
+/** Opens Settings > System > Sound > "App volume and device preferences", as a manual fallback. */
 export async function openAppVolumeSettings(): Promise<void> {
     try {
         // `start` is a cmd.exe builtin, not an executable, so it must be run through cmd.

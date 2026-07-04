@@ -43,6 +43,18 @@ export async function windowsOpenAppVolumeSettings(_: IpcMainInvokeEvent) {
     return windows.openAppVolumeSettings();
 }
 
+export async function windowsListAudioApps(_: IpcMainInvokeEvent) {
+    return windows.listAudioApps();
+}
+
+export async function windowsExcludeAppAudio(_: IpcMainInvokeEvent, processId: string) {
+    return windows.excludeAppAudio(processId);
+}
+
+export async function windowsRestoreAudio(_: IpcMainInvokeEvent) {
+    return windows.restoreAudio();
+}
+
 // ---- macOS ----------------------------------------------------------------
 
 export async function macosCheckBlackHole(_: IpcMainInvokeEvent) {
