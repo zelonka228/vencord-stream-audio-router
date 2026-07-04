@@ -114,6 +114,57 @@ device preferences" page), or install a free virtual audio cable like
 [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) to get a second
 destination.
 
+#### Windows: the svcl.exe dependency
+
+The Windows backend needs [SoundVolumeCommandLine (svcl.exe)](https://www.nirsoft.net/utils/sound_volume_command_line.html)
+to work - a small, free command-line tool from NirSoft, built specifically
+for scripting per-app audio device changes on Windows (there's no public
+Microsoft API for this, so this is effectively the only well-established
+tool for it). It is **not open source**, but it's a long-standing, widely
+used utility with no known history of bundled malware or telemetry.
+
+**Normal case - you don't need to do anything.** The first time you click
+**Exclude selected app from stream audio**, the plugin automatically
+downloads `svcl.exe` straight from `nirsoft.net` and saves it to:
+
+```
+%APPDATA%\<discord-folder>\StreamAudioRouter\svcl.exe
+```
+
+where `<discord-folder>` depends on which Discord branch you patched -
+`discord` for Stable, `discordcanary` for Canary, `discordptb` for PTB.
+For example, on Canary: `%APPDATA%\discordcanary\StreamAudioRouter\svcl.exe`.
+This only happens once; later clicks reuse the same file.
+
+**If the automatic download fails** (e.g. no internet access at that
+moment, a firewall/antivirus blocking the request, or a corporate network
+that blocks nirsoft.net), install it yourself:
+
+1. Download the tool directly: <https://www.nirsoft.net/utils/svcl.zip>
+2. Extract the zip - you'll get `svcl.exe`, `svcl.chm`, and `readme.txt`.
+3. Create the folder if it doesn't exist yet, then copy all three files into it:
+   ```powershell
+   New-Item -ItemType Directory -Force -Path "$env:APPDATA\discordcanary\StreamAudioRouter"
+   Copy-Item "path\to\extracted\*" "$env:APPDATA\discordcanary\StreamAudioRouter\"
+   ```
+   (swap `discordcanary` for `discord` or `discordptb` to match the branch you patched)
+4. Restart Discord and try **Exclude selected app from stream audio** again - it'll find the file and skip the download step.
+
+**To verify it's working / debug it yourself from a terminal:**
+
+```powershell
+# List every app currently playing audio, and every playback device, in CSV form:
+& "$env:APPDATA\discordcanary\StreamAudioRouter\svcl.exe" /scomma "$env:TEMP\sessions.csv"
+Get-Content "$env:TEMP\sessions.csv"
+
+# Manually move one app's audio to a specific device (same command the plugin runs):
+& "$env:APPDATA\discordcanary\StreamAudioRouter\svcl.exe" /Stdout /SetAppDefault "<Command-Line Friendly ID from the CSV above>" all "SomeApp.exe"
+```
+
+If svcl.exe reports "1 item found" for that last command, it worked. If it
+reports "0 item found", double-check the exact process name (case
+sensitive, must end in `.exe`) and the device ID string.
+
 #### macOS walkthrough
 
 ```bash
@@ -381,6 +432,58 @@ PulseAudio сам возвращает исключённое приложени
 приложений и параметры устройств"), либо поставь бесплатный виртуальный
 аудио-кабель, например [VB-Audio Virtual Cable](https://vb-audio.com/Cable/),
 чтобы получить второе устройство.
+
+#### Windows: зависимость от svcl.exe
+
+Windows-часть плагина нуждается в [SoundVolumeCommandLine (svcl.exe)](https://www.nirsoft.net/utils/sound_volume_command_line.html)
+— небольшой бесплатной консольной утилите от NirSoft, созданной именно
+для скриптового управления звуковым устройством по приложениям в Windows
+(у Microsoft нет публичного API для этого, так что это фактически
+единственный устоявшийся инструмент). Это **не open source**, но давно
+существующая, широко используемая утилита без известной истории
+встроенного вредоносного кода или телеметрии.
+
+**Обычный случай — делать ничего не нужно.** При первом нажатии
+**Exclude selected app from stream audio** плагин сам скачивает
+`svcl.exe` напрямую с `nirsoft.net` и сохраняет его сюда:
+
+```
+%APPDATA%\<папка-discord>\StreamAudioRouter\svcl.exe
+```
+
+где `<папка-discord>` зависит от того, какую ветку Discord ты патчил —
+`discord` для Stable, `discordcanary` для Canary, `discordptb` для PTB.
+Например, для Canary: `%APPDATA%\discordcanary\StreamAudioRouter\svcl.exe`.
+Скачивание происходит только один раз, дальше используется тот же файл.
+
+**Если автоматическое скачивание не удалось** (например, в этот момент
+не было интернета, файрвол/антивирус заблокировал запрос, или
+корпоративная сеть блокирует nirsoft.net) — поставь вручную:
+
+1. Скачай утилиту напрямую: <https://www.nirsoft.net/utils/svcl.zip>
+2. Распакуй архив — получишь `svcl.exe`, `svcl.chm` и `readme.txt`.
+3. Создай папку, если её ещё нет, и скопируй туда все три файла:
+   ```powershell
+   New-Item -ItemType Directory -Force -Path "$env:APPDATA\discordcanary\StreamAudioRouter"
+   Copy-Item "путь\к\распакованным\файлам\*" "$env:APPDATA\discordcanary\StreamAudioRouter\"
+   ```
+   (замени `discordcanary` на `discord` или `discordptb`, смотря какую ветку патчил)
+4. Перезапусти Discord и снова нажми **Exclude selected app from stream audio** — плагин найдёт файл и пропустит шаг скачивания.
+
+**Чтобы проверить работу / отладить самостоятельно из терминала:**
+
+```powershell
+# Список всех приложений, которые сейчас играют звук, и всех устройств вывода, в CSV:
+& "$env:APPDATA\discordcanary\StreamAudioRouter\svcl.exe" /scomma "$env:TEMP\sessions.csv"
+Get-Content "$env:TEMP\sessions.csv"
+
+# Вручную перенести звук приложения на конкретное устройство (та же команда, что выполняет плагин):
+& "$env:APPDATA\discordcanary\StreamAudioRouter\svcl.exe" /Stdout /SetAppDefault "<Command-Line Friendly ID из CSV выше>" all "SomeApp.exe"
+```
+
+Если `svcl.exe` в ответ на последнюю команду пишет "1 item found" — всё
+сработало. Если "0 item found" — перепроверь точное имя процесса
+(регистр важен, должно заканчиваться на `.exe`) и строку ID устройства.
 
 #### Инструкция для macOS
 
