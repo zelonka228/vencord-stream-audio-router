@@ -178,6 +178,69 @@ function LinuxPanel() {
     );
 }
 
+function WindowsDeviceStatus() {
+    const t = useT();
+    const [hasSecondDevice, setHasSecondDevice] = useState<boolean | null>(null);
+    const [cableInstalled, setCableInstalled] = useState(false);
+    const [installing, setInstalling] = useState(false);
+    const [installStarted, setInstallStarted] = useState(false);
+
+    async function check() {
+        setHasSecondDevice(null);
+        try {
+            const [hasSecond, cable] = await Promise.all([
+                Native.windowsHasSecondPlaybackDevice(),
+                Native.windowsIsVirtualCableInstalled()
+            ]);
+            setHasSecondDevice(hasSecond);
+            setCableInstalled(cable);
+        } catch (e) {
+            notifyError(e);
+            setHasSecondDevice(true); // don't block the rest of the panel on a failed check
+        }
+    }
+
+    useEffect(() => { check(); }, []);
+
+    async function handleInstall() {
+        setInstalling(true);
+        try {
+            await Native.windowsInstallVirtualCable();
+            setInstallStarted(true);
+            notifySuccess(t.windowsVirtualCableInstallStarted);
+        } catch (e) {
+            notifyError(e);
+        } finally {
+            setInstalling(false);
+        }
+    }
+
+    if (hasSecondDevice === null) {
+        return <Forms.FormText className={Margins.top8}>{t.windowsCheckingDevices}</Forms.FormText>;
+    }
+
+    if (hasSecondDevice) return null;
+
+    return (
+        <>
+            <Forms.FormText className={Margins.top8} style={{ color: "var(--text-danger)" }}>
+                {t.windowsOnlyOneDevice}
+            </Forms.FormText>
+            {cableInstalled ? (
+                <Forms.FormText className={Margins.top8}>{t.windowsVirtualCableInstalled}</Forms.FormText>
+            ) : (
+                <Button onClick={handleInstall} disabled={installing} color={Button.Colors.GREEN} className={Margins.top8}>
+                    {t.windowsInstallVirtualCableButton}
+                </Button>
+            )}
+            {(cableInstalled || installStarted) && (
+                <Forms.FormText className={Margins.top8}>{t.windowsVirtualCableListenNote}</Forms.FormText>
+            )}
+            <Divider className={Margins.top16} />
+        </>
+    );
+}
+
 function WindowsPanel() {
     const t = useT();
     const [apps, setApps] = useState<WindowsAudioApp[]>([]);
@@ -238,6 +301,8 @@ function WindowsPanel() {
                 {t.windowsDescription}
             </Forms.FormText>
             <Divider className={Margins.top16} />
+
+            <WindowsDeviceStatus />
 
             {loadError && (
                 <Forms.FormText className={Margins.top8} style={{ color: "var(--text-danger)" }}>

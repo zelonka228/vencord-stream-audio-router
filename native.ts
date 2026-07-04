@@ -55,6 +55,18 @@ export async function windowsRestoreAudio(_: IpcMainInvokeEvent) {
     return windows.restoreAudio();
 }
 
+export async function windowsHasSecondPlaybackDevice(_: IpcMainInvokeEvent) {
+    return windows.hasSecondPlaybackDevice();
+}
+
+export async function windowsIsVirtualCableInstalled(_: IpcMainInvokeEvent) {
+    return windows.isVirtualCableInstalled();
+}
+
+export async function windowsInstallVirtualCable(_: IpcMainInvokeEvent) {
+    return windows.installVirtualCable();
+}
+
 // ---- macOS ----------------------------------------------------------------
 
 export async function macosCheckBlackHole(_: IpcMainInvokeEvent) {

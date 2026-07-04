@@ -296,6 +296,70 @@ export async function openAppVolumeSettings(): Promise<void> {
     }
 }
 
+const VB_CABLE_URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
+
+/** True if a machine has any real playback device besides the current default. */
+export async function hasSecondPlaybackDevice(): Promise<boolean> {
+    const rows = await getRows();
+    const devices = extractRenderDevices(rows);
+    return devices.some(d => !d.isDefault);
+}
+
+/**
+ * True if VB-Audio Virtual Cable is already installed (its "CABLE Input"
+ * playback endpoint shows up like any other real device once the driver
+ * is present).
+ */
+export async function isVirtualCableInstalled(): Promise<boolean> {
+    const rows = await getRows();
+    const devices = extractRenderDevices(rows);
+    return devices.some(d => d.name.toLowerCase().includes("cable"));
+}
+
+/**
+ * Downloads the VB-Audio Virtual Cable driver installer and launches it
+ * elevated. Windows requires admin rights and a reboot to install any
+ * audio driver - neither can be scripted away, so this only gets the user
+ * to the installer's own UAC prompt as fast as possible instead of making
+ * them go find the download themselves.
+ */
+export async function installVirtualCable(): Promise<void> {
+    const { existsSync, mkdtempSync } = await import("fs");
+    const { tmpdir } = await import("os");
+
+    const stageDir = mkdtempSync(join(tmpdir(), "vencord-vbcable-"));
+
+    const res = await fetch(VB_CABLE_URL);
+    if (!res.ok) throw new Error(`Failed to download VB-Cable: ${res.status} ${res.statusText}`);
+
+    const zipBytes = new Uint8Array(await res.arrayBuffer());
+    const { unzipSync } = await import("fflate");
+    const files = unzipSync(zipBytes);
+
+    for (const [name, data] of Object.entries(files)) {
+        await writeFile(join(stageDir, name), data);
+    }
+
+    const setupName = Object.keys(files).find(n => /^VBCABLE_Setup_x64\.exe$/i.test(n))
+        ?? Object.keys(files).find(n => /^VBCABLE_Setup\.exe$/i.test(n));
+    if (!setupName) throw new Error("Could not find the VB-Cable setup executable in the downloaded archive.");
+
+    const setupPath = join(stageDir, setupName);
+    if (!existsSync(setupPath)) throw new Error("VB-Cable setup executable failed to extract.");
+
+    // Launching an elevated process from an unelevated one requires the
+    // "RunAs" verb - Node has no built-in way to do this, so we go through
+    // PowerShell's Start-Process, which triggers the normal Windows UAC
+    // prompt (this cannot be bypassed, and shouldn't be - it's a real
+    // driver install).
+    await exec(
+        `powershell -NoProfile -Command "Start-Process -FilePath '${setupPath}' -Verb RunAs -Wait"`,
+        { timeout: 5 * 60 * 1000 }
+    ).catch((e: any) => {
+        throw new Error(`Could not launch the VB-Cable installer: ${e?.message ?? e}`);
+    });
+}
+
 export async function isSupported(): Promise<boolean> {
     return process.platform === "win32";
 }
