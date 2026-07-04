@@ -107,12 +107,17 @@ The panel's text automatically follows **Discord's own display language** - if D
 3. Start your screen share, enable Discord's **Share Audio** checkbox.
 4. When done, click **Include back / reset to normal**.
 
-If you get an error saying only one playback device was found, you don't
-have a second device to move the app to - use the manual fallback button
-at the bottom of the panel instead (opens Windows' own "App volume and
-device preferences" page), or install a free virtual audio cable like
-[VB-Audio Virtual Cable](https://vb-audio.com/Cable/) to get a second
-destination.
+If you only have one playback device (e.g. just a headset - very common),
+the panel detects this on load and shows a **Download and install
+VB-Audio Virtual Cable** button - one click downloads the driver and
+launches its installer elevated (Windows will show its own admin/UAC
+prompt for this, which can't be skipped - it's a real driver). After the
+install finishes and you reboot, there's one manual step the panel walks
+you through: enabling "Listen to this device" on the cable's recording
+side in Windows' own Sound Settings, pointed at your real headphones -
+that's what lets you keep hearing an excluded app once it's moved onto
+the cable. After that one-time setup, Exclude/Restore work fully
+automatically from then on, same as Linux.
 
 #### Windows: the svcl.exe dependency
 
@@ -426,12 +431,17 @@ PulseAudio сам возвращает исключённое приложени
 3. Запусти демонстрацию экрана, включи чекбокс **Share Audio**.
 4. По завершении нажми **Include back / reset to normal**.
 
-Если появится ошибка о том, что найдено только одно устройство
-воспроизведения — значит переносить звук некуда, используй кнопку
-ручного способа внизу панели (открывает штатную страницу "Громкость
-приложений и параметры устройств"), либо поставь бесплатный виртуальный
-аудио-кабель, например [VB-Audio Virtual Cable](https://vb-audio.com/Cable/),
-чтобы получить второе устройство.
+Если у тебя только одно устройство вывода (например, просто гарнитура —
+частый случай), панель сама это определит при открытии и покажет кнопку
+**Скачать и установить VB-Audio Virtual Cable** — один клик скачивает
+драйвер и запускает установщик с повышенными правами (Windows покажет
+свой запрос на права администратора — это неизбежно для реального
+драйвера). После завершения установки и перезагрузки панель подскажет
+единственный оставшийся ручной шаг: включить "Прослушать с данного
+устройства" на записывающей стороне кабеля в настройках звука Windows,
+указав свои реальные наушники — именно это позволяет по-прежнему слышать
+исключённое приложение после переноса на кабель. После этой разовой
+настройки Exclude/Restore работают полностью автоматически, как на Linux.
 
 #### Windows: зависимость от svcl.exe
 
