@@ -40,9 +40,15 @@ import { definePluginSettings } from "@api/Settings";
 import { Divider } from "@components/Divider";
 import { Margins } from "@utils/margins";
 import definePlugin, { PluginNative } from "@utils/types";
-import { Button, Forms, Select, Toasts, useEffect, useState } from "@webpack/common";
+import { RenderModalProps } from "@vencord/discord-types";
+import { findComponentByCodeLazy } from "@webpack";
+import { Button, Forms, Modal, openModal, Select, Toasts, useEffect, useState } from "@webpack/common";
 
 import type { AudioApp } from "./platform/linux";
+
+// The round icon button used next to Mute/Deafen in the account panel -
+// same lookup used by Vencord's own GameActivityToggle plugin.
+const AccountPanelButton = findComponentByCodeLazy(".GREEN,positionKeyStemOverride:");
 
 const Native = VencordNative.pluginHelpers.StreamAudioRouter as PluginNative<typeof import("./native")>;
 
@@ -240,6 +246,42 @@ function SettingsPanel() {
     return <Forms.FormText>Unsupported platform: {platform}</Forms.FormText>;
 }
 
+function RouterIcon() {
+    return (
+        <svg width="20" height="20" viewBox="0 0 24 24">
+            <path
+                fill="currentColor"
+                d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2a4.5 4.5 0 0 0-2.5-4.03v8.06A4.5 4.5 0 0 0 16.5 12Zm-2.5-9v2.06A7.002 7.002 0 0 1 19 12a7 7 0 0 1-5 6.94V21a9 9 0 0 0 0-17Z"
+            />
+        </svg>
+    );
+}
+
+function RouterModal(props: RenderModalProps) {
+    return (
+        <Modal {...props} title="StreamAudioRouter">
+            <SettingsPanel />
+        </Modal>
+    );
+}
+
+function openRouterModal() {
+    openModal(props => <RouterModal {...props} />);
+}
+
+/** Quick-access button shown next to Mute/Deafen - opens the same panel as Settings, without navigating there. */
+function AccountPanelToolButton(props: { nameplate?: any; }) {
+    return (
+        <AccountPanelButton
+            tooltipText="StreamAudioRouter"
+            icon={RouterIcon}
+            role="button"
+            plated={props?.nameplate != null}
+            onClick={openRouterModal}
+        />
+    );
+}
+
 const settings = definePluginSettings({});
 
 export default definePlugin({
@@ -253,6 +295,22 @@ export default definePlugin({
     settings,
 
     settingsAboutComponent: SettingsPanel,
+
+    patches: [
+        {
+            find: "#{intl::USER_PROFILE_ACCOUNT_POPOUT_BUTTON_A11Y_LABEL}",
+            replacement: {
+                match: /children:\[(?=.{0,25}?accountContainerRef)/,
+                replace: "children:[$self.AccountPanelToolButton(arguments[0]),"
+            }
+        }
+    ],
+
+    AccountPanelToolButton,
+
+    toolboxActions: {
+        "Open StreamAudioRouter": openRouterModal
+    },
 
     async stop() {
         // Best-effort cleanup so toggling the plugin off never leaves the
