@@ -127,16 +127,26 @@ npm install -g pnpm
 #### 2. Install Discord itself, then Vencord
 
 Discord has to already be installed and have been launched at least once
-(so its actual app folder exists) before running the Vencord installer:
+(so its actual app folder exists) before running the Vencord installer.
 
+**Linux / macOS:**
 ```bash
 sh -c "$(curl -sS https://vencord.dev/install.sh)"
 ```
 
-Point it at your real Discord install folder if it doesn't find it
-automatically (on Linux this is typically under
-`~/.config/discord/app-<version>` after Discord's first launch, not
-`/usr/share/discord`).
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://vencord.dev/install.ps1 | iex
+```
+
+If the installer doesn't find Discord automatically, point it at your real
+install folder:
+
+| OS | Typical Discord install path |
+|---|---|
+| Linux | `~/.config/discord/app-<version>` (after Discord's first launch - **not** `/usr/share/discord`, that's just a launcher stub) |
+| macOS | `~/Library/Application Support/discord/app-<version>` |
+| Windows | `%localappdata%\Discord\app-<version>` |
 
 #### 3. Build Vencord from source with this plugin included
 
@@ -326,15 +336,25 @@ npm install -g pnpm
 #### 2. Установи сам Discord, затем Vencord
 
 Discord должен быть уже установлен и хотя бы раз запущен (чтобы появилась
-его реальная папка с приложением) до запуска установщика Vencord:
+его реальная папка с приложением) до запуска установщика Vencord.
 
+**Linux / macOS:**
 ```bash
 sh -c "$(curl -sS https://vencord.dev/install.sh)"
 ```
 
-Если он не найдёт Discord автоматически — укажи путь вручную (на Linux это
-обычно `~/.config/discord/app-<версия>` после первого запуска Discord, а
-не `/usr/share/discord`).
+**Windows (PowerShell):**
+```powershell
+iwr -useb https://vencord.dev/install.ps1 | iex
+```
+
+Если установщик не найдёт Discord автоматически — укажи путь вручную:
+
+| ОС | Типичный путь установки Discord |
+|---|---|
+| Linux | `~/.config/discord/app-<версия>` (после первого запуска Discord — **не** `/usr/share/discord`, это просто скрипт-запускалка) |
+| macOS | `~/Library/Application Support/discord/app-<версия>` |
+| Windows | `%localappdata%\Discord\app-<версия>` |
 
 #### 3. Собери Vencord из исходников вместе с этим плагином
 
