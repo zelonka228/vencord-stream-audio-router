@@ -54,6 +54,8 @@ export interface AudioApp {
 export interface RenderDevice {
     /** svcl.exe's "Command-Line Friendly ID" for this device. */
     id: string;
+    /** The raw MMDevice endpoint id (svcl's "Item ID"), needed to point the "Listen" feature at this device. */
+    itemId: string;
     name: string;
     isDefault: boolean;
 }
@@ -100,8 +102,10 @@ export interface SvclRow {
     deviceName: string;
     isDefault: boolean;
     deviceState: string;
+    itemId: string;
     commandLineFriendlyId: string;
     processPath: string;
+    registryKey: string;
 }
 
 // Column order comes from svcl.exe's fixed CSV header:
@@ -117,8 +121,10 @@ const COLUMN_INDEX = {
     deviceName: 3,
     default: 4,
     deviceState: 7,
+    itemId: 17,
     commandLineFriendlyId: 18,
-    processPath: 19
+    processPath: 19,
+    registryKey: 22
 };
 
 /**
@@ -145,8 +151,10 @@ export function parseSvclCsv(raw: string): SvclRow[] {
             deviceName: f[COLUMN_INDEX.deviceName] ?? "",
             isDefault: (f[COLUMN_INDEX.default] ?? "").trim().length > 0,
             deviceState: f[COLUMN_INDEX.deviceState] ?? "",
+            itemId: f[COLUMN_INDEX.itemId] ?? "",
             commandLineFriendlyId: f[COLUMN_INDEX.commandLineFriendlyId] ?? "",
-            processPath: f[COLUMN_INDEX.processPath] ?? ""
+            processPath: f[COLUMN_INDEX.processPath] ?? "",
+            registryKey: f[COLUMN_INDEX.registryKey] ?? ""
         };
     });
 }
@@ -184,12 +192,29 @@ export function extractRenderDevices(rows: SvclRow[]): RenderDevice[] {
         .filter(row => row.type === "Device" && row.direction === "Render")
         .map(row => ({
             id: row.commandLineFriendlyId,
+            itemId: row.itemId,
             // row.name is the specific endpoint (e.g. "Headphones"); row.deviceName
             // is the parent sound card/driver (e.g. "High Definition Audio Device") -
             // multiple endpoints can share the same deviceName, so it's not unique enough.
             name: row.name || row.deviceName,
             isDefault: row.isDefault
         }));
+}
+
+/**
+ * Finds the registry key (as reported by svcl.exe itself, no GUID-guessing)
+ * for VB-Cable's recording endpoint ("CABLE Output") - the counterpart you
+ * enable "Listen to this device" on to hear audio that was routed onto the
+ * cable. Pure function.
+ */
+export function findCableCaptureRegistryKey(rows: SvclRow[]): string | null {
+    const row = rows.find(r =>
+        r.type === "Device" &&
+        r.direction === "Capture" &&
+        r.name.toLowerCase().includes("cable output") &&
+        r.registryKey
+    );
+    return row?.registryKey ?? null;
 }
 
 async function ensureSvcl(): Promise<string> {
@@ -357,6 +382,70 @@ export async function installVirtualCable(): Promise<void> {
         { timeout: 5 * 60 * 1000 }
     ).catch((e: any) => {
         throw new Error(`Could not launch the VB-Cable installer: ${e?.message ?? e}`);
+    });
+}
+
+// The "Listen to this device" feature's endpoint property GUID - a publicly
+// documented/reverse-engineered constant used by many audio automation
+// tools, not something we guessed. Property `,0` is the DWORD on/off flag;
+// `,1` is the string ID of the playback device to listen through.
+const LISTEN_PROPERTY_GUID = "{24dbb0fc-9311-4b3d-9cf0-18ff155639d4}";
+
+function toRegPath(registryKey: string): string {
+    return registryKey.replace(/^HKEY_LOCAL_MACHINE\\/i, "HKLM\\") + "\\Properties";
+}
+
+/**
+ * True if VB-Cable's "CABLE Output" already has "Listen to this device"
+ * turned on. Reading HKLM's MMDevices subtree doesn't need elevation.
+ */
+export async function isCableListenConfigured(): Promise<boolean> {
+    const rows = await getRows();
+    const cableKey = findCableCaptureRegistryKey(rows);
+    if (!cableKey) return false;
+
+    try {
+        const { stdout } = await execFileAsync("reg", [
+            "query", toRegPath(cableKey), "/v", `${LISTEN_PROPERTY_GUID},0`
+        ]);
+        return /0x1\b/.test(stdout);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Turns on "Listen to this device" for VB-Cable's recording endpoint,
+ * pointed at the current default playback device (your real headphones/
+ * speakers) - this is what lets you keep hearing an app once it's been
+ * moved onto the cable. Writing under HKLM needs elevation, so this opens
+ * one more (unavoidable) UAC prompt, same as the driver install itself.
+ */
+export async function enableCableListen(): Promise<void> {
+    const rows = await getRows();
+
+    const cableKey = findCableCaptureRegistryKey(rows);
+    if (!cableKey) {
+        throw new Error(
+            "Could not find VB-Cable's recording device. Make sure VB-Audio Virtual Cable is installed " +
+            "and you've restarted your PC since installing it."
+        );
+    }
+
+    const devices = extractRenderDevices(rows);
+    const target = devices.find(d => d.isDefault && !d.name.toLowerCase().includes("cable"));
+    if (!target) throw new Error("Could not determine your real default playback device.");
+
+    const regPath = toRegPath(cableKey);
+    const script =
+        `reg add "${regPath}" /v "${LISTEN_PROPERTY_GUID},0" /t REG_DWORD /d 1 /f ; ` +
+        `reg add "${regPath}" /v "${LISTEN_PROPERTY_GUID},1" /t REG_SZ /d "${target.itemId}" /f`;
+
+    await exec(
+        `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile -Command \\"${script}\\"' -Verb RunAs -Wait"`,
+        { timeout: 60 * 1000 }
+    ).catch((e: any) => {
+        throw new Error(`Could not configure audio Listen: ${e?.message ?? e}`);
     });
 }
 

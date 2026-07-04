@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 
-import { extractAudioApps, extractRenderDevices, parseCsvLine, parseSvclCsv } from "../platform/windows.ts";
+import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, parseCsvLine, parseSvclCsv } from "../platform/windows.ts";
 
 let passed = 0;
 let failed = 0;
@@ -36,7 +36,8 @@ const SAMPLE_CSV = [
     "RustClient.exe,Application,Render,High Definition Audio Device,,,,Active,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{0.0.0.00000000}.{181f65d2}|bar|1%b48528,High Definition Audio Device\\Application\\RustClient.exe,C:\\Program Files (x86)\\Steam\\steamapps\\common\\Rust\\RustClient.exe,48528,Rust,,,",
     "Steam,Application,Render,High Definition Audio Device,,,,Inactive,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{0.0.0.00000000}.{181f65d2}|baz|1%b21336,High Definition Audio Device\\Application\\Steam,C:\\Program Files (x86)\\Steam\\steam.exe,21336,,,,",
     "Headphones,Device,Render,High Definition Audio Device,Render,Render,Render,Active,No,0.00 dB,100.0%,-64.00 dB,0.00 dB,1.00 dB,2,\"0.00 dB, 0.00 dB\",\"100.0%, 100.0%\",{0.0.0.00000000}.{181f65d2},High Definition Audio Device\\Device\\Headphones\\Render,,,,HKEY_LOCAL_MACHINE\\...,0x3 0x0 0x0,\"2 Channel, 16 bit, 48000 Hz\"",
-    "Speakers,Device,Render,NVIDIA High Definition Audio,,,,Active,No,,100.0%,-64.00 dB,0.00 dB,1.00 dB,2,,\"100.0%, 100.0%\",{0.0.0.00000001}.{deadbeef},NVIDIA High Definition Audio\\Device\\Speakers\\Render,,,,HKEY_LOCAL_MACHINE\\...,,\"2 Channel, 16 bit, 48000 Hz\""
+    "Speakers,Device,Render,NVIDIA High Definition Audio,,,,Active,No,,100.0%,-64.00 dB,0.00 dB,1.00 dB,2,,\"100.0%, 100.0%\",{0.0.0.00000001}.{deadbeef},NVIDIA High Definition Audio\\Device\\Speakers\\Render,,,,HKEY_LOCAL_MACHINE\\...,,\"2 Channel, 16 bit, 48000 Hz\"",
+    "CABLE Output,Device,Capture,VB-Audio Virtual Cable,,,,Active,No,,100.0%,-64.00 dB,0.00 dB,1.00 dB,2,,\"100.0%, 100.0%\",{0.0.1.00000000}.{cablecab-1234-5678-9abc-cablecable01},VB-Audio Virtual Cable\\Device\\CABLE Output\\Capture,,,,HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture\\{cablecab-1234-5678-9abc-cablecable01},,\"2 Channel, 16 bit, 48000 Hz\""
 ].join("\r\n");
 
 console.log("parseCsvLine");
@@ -63,7 +64,7 @@ console.log("parseSvclCsv");
 
 test("parses the header + all data rows", () => {
     const rows = parseSvclCsv(SAMPLE_CSV);
-    assert.equal(rows.length, 5);
+    assert.equal(rows.length, 6);
 });
 
 test("extracts application rows with correct fields", () => {
@@ -128,6 +129,32 @@ test("lists real playback devices with default flag", () => {
     assert.equal(devices.length, 2);
     assert.ok(devices.some(d => d.name === "Headphones" && d.isDefault));
     assert.ok(devices.some(d => d.name === "Speakers" && !d.isDefault));
+});
+
+// ---------------------------------------------------------------------------
+
+console.log("findCableCaptureRegistryKey");
+
+test("finds CABLE Output's registry key when VB-Cable is installed", () => {
+    const rows = parseSvclCsv(SAMPLE_CSV);
+    const key = findCableCaptureRegistryKey(rows);
+    assert.equal(
+        key,
+        "HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture\\{cablecab-1234-5678-9abc-cablecable01}"
+    );
+});
+
+test("returns null when VB-Cable is not installed", () => {
+    const rows = parseSvclCsv(SAMPLE_CSV.split("\r\n").slice(0, -1).join("\r\n"));
+    assert.equal(findCableCaptureRegistryKey(rows), null);
+});
+
+test("does not match a Render-direction device that happens to have 'cable' in its name", () => {
+    const raw = [
+        SAMPLE_CSV.split("\r\n")[0],
+        "My Cable Output,Device,Render,Some Card,,,,Active,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{x}.{y},Some Card\\Device\\My Cable Output\\Render,,,,HKEY_LOCAL_MACHINE\\Should\\Not\\Match,,"
+    ].join("\r\n");
+    assert.equal(findCableCaptureRegistryKey(parseSvclCsv(raw)), null);
 });
 
 // ---------------------------------------------------------------------------

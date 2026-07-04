@@ -67,6 +67,14 @@ export async function windowsInstallVirtualCable(_: IpcMainInvokeEvent) {
     return windows.installVirtualCable();
 }
 
+export async function windowsIsCableListenConfigured(_: IpcMainInvokeEvent) {
+    return windows.isCableListenConfigured();
+}
+
+export async function windowsEnableCableListen(_: IpcMainInvokeEvent) {
+    return windows.enableCableListen();
+}
+
 // ---- macOS ----------------------------------------------------------------
 
 export async function macosCheckBlackHole(_: IpcMainInvokeEvent) {

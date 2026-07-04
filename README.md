@@ -108,16 +108,77 @@ The panel's text automatically follows **Discord's own display language** - if D
 4. When done, click **Include back / reset to normal**.
 
 If you only have one playback device (e.g. just a headset - very common),
-the panel detects this on load and shows a **Download and install
-VB-Audio Virtual Cable** button - one click downloads the driver and
-launches its installer elevated (Windows will show its own admin/UAC
-prompt for this, which can't be skipped - it's a real driver). After the
-install finishes and you reboot, there's one manual step the panel walks
-you through: enabling "Listen to this device" on the cable's recording
-side in Windows' own Sound Settings, pointed at your real headphones -
-that's what lets you keep hearing an excluded app once it's moved onto
-the cable. After that one-time setup, Exclude/Restore work fully
-automatically from then on, same as Linux.
+the panel detects this on load and walks you through getting a second one
+for free. See **Windows: setting up VB-Audio Virtual Cable** below for the
+full step-by-step guide (what each button does, what to expect, and how
+to do every step by hand if you'd rather not use the buttons, or if
+something doesn't work).
+
+#### Windows: setting up VB-Audio Virtual Cable
+
+This section is only relevant if the panel told you it only found one
+playback device. If you already have two (e.g. speakers + a headset),
+skip this - Exclude/Restore already work with no further setup.
+
+VB-Audio Virtual Cable is a free virtual audio driver: a fake "device"
+Windows treats like a real speaker, except nothing physical is attached to
+it. That's exactly the second destination Windows itself doesn't provide
+for free - the plugin moves the excluded app there instead of your real
+device, and loops the sound back to your real headphones so you don't
+lose it.
+
+**Step 1 - install the driver.**
+Click **Download and install VB-Audio Virtual Cable** in the panel. This:
+- Downloads `VBCABLE_Driver_Pack45.zip` (~1.3 MB) directly from `download.vb-audio.com`.
+- Extracts it to a temporary folder.
+- Launches `VBCABLE_Setup_x64.exe` **elevated** - Windows will show its own admin/UAC prompt. This is unavoidable for any audio driver install, on any tool, and isn't something a script should skip past.
+- Waits for you to click through the installer's own wizard (just "Next" a couple of times, no configuration needed).
+
+If you'd rather do this yourself instead of clicking the button:
+1. Download <https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip> manually.
+2. Extract the zip.
+3. Right-click `VBCABLE_Setup_x64.exe` → **Run as administrator**.
+4. Click through the setup wizard.
+
+**Step 2 - reboot.** VB-Cable's own installer and NirSoft's documentation
+both say a restart is required for the driver to fully register with
+Windows. Don't skip this even if things look like they're working -
+half-registered audio drivers cause weird, hard-to-debug glitches.
+
+**Step 3 - one remaining setting: "Listen to this device".**
+After installing VB-Cable (and this is genuinely new territory - once the
+excluded app's audio arrives at the cable, nothing plays it out loud
+anywhere unless you tell Windows to also send it to your real headphones).
+Reopen the plugin panel after rebooting - it now shows a **Configure
+automatically** button:
+- Click it - one more (final) elevated prompt appears, because this
+  setting lives under a part of the registry only an administrator can
+  write to.
+- It finds VB-Cable's recording device ("CABLE Output") and turns on
+  "Listen to this device", pointed at whichever device is currently your
+  real default output.
+
+If you'd rather configure this by hand instead (or the automatic button
+reports an error):
+1. Right-click the speaker icon in your taskbar → **Sounds** (or open
+   **Control Panel → Sound**).
+2. Go to the **Recording** tab.
+3. Find **CABLE Output**, right-click it → **Properties**.
+4. Open the **Listen** tab.
+5. Check **Listen to this device**.
+6. In the dropdown below it, pick your real headphones/speakers (not
+   another cable device).
+7. Click **OK**.
+
+**That's it - after Steps 1-3, everything else is automatic**, exactly
+like Linux: pick the app to exclude, click Exclude, share your screen,
+enable Discord's Share Audio, done. You only do the cable setup once,
+ever, on that PC.
+
+**If sound still doesn't come through after all this:** double-check the
+device selected in the Listen tab is your actual current output device
+(not a leftover selection from a device you no longer use), and that
+Windows' overall volume for "CABLE Output" (Recording tab) isn't muted.
 
 #### Windows: the svcl.exe dependency
 
@@ -432,16 +493,80 @@ PulseAudio сам возвращает исключённое приложени
 4. По завершении нажми **Include back / reset to normal**.
 
 Если у тебя только одно устройство вывода (например, просто гарнитура —
-частый случай), панель сама это определит при открытии и покажет кнопку
-**Скачать и установить VB-Audio Virtual Cable** — один клик скачивает
-драйвер и запускает установщик с повышенными правами (Windows покажет
-свой запрос на права администратора — это неизбежно для реального
-драйвера). После завершения установки и перезагрузки панель подскажет
-единственный оставшийся ручной шаг: включить "Прослушать с данного
-устройства" на записывающей стороне кабеля в настройках звука Windows,
-указав свои реальные наушники — именно это позволяет по-прежнему слышать
-исключённое приложение после переноса на кабель. После этой разовой
-настройки Exclude/Restore работают полностью автоматически, как на Linux.
+частый случай), панель сама это определит при открытии и проведёт тебя
+через получение второго бесплатно. Смотри полную пошаговую инструкцию
+ниже: **Windows: установка VB-Audio Virtual Cable** — что делает каждая
+кнопка, чего ожидать, и как сделать каждый шаг руками, если не хочется
+пользоваться кнопками, или если что-то не сработало.
+
+#### Windows: установка VB-Audio Virtual Cable
+
+Этот раздел актуален, только если панель сказала, что нашла всего одно
+устройство воспроизведения. Если у тебя уже есть два (например, колонки
++ гарнитура) — пропусти этот раздел, Exclude/Restore уже работают без
+дополнительной настройки.
+
+VB-Audio Virtual Cable — это бесплатный виртуальный аудио-драйвер:
+"устройство", которое Windows воспринимает как настоящую колонку, хотя
+физически к нему ничего не подключено. Это именно то второе устройство,
+которого Windows сама по себе бесплатно не даёт — плагин переносит туда
+звук исключённого приложения вместо реального устройства, и зацикливает
+звук обратно на твои настоящие наушники, чтобы ты его не потерял.
+
+**Шаг 1 — установить драйвер.**
+Нажми **Скачать и установить VB-Audio Virtual Cable** в панели. Это:
+- Скачивает `VBCABLE_Driver_Pack45.zip` (~1.3 МБ) напрямую с `download.vb-audio.com`.
+- Распаковывает во временную папку.
+- Запускает `VBCABLE_Setup_x64.exe` **с повышенными правами** — Windows покажет свой запрос на права администратора. Это неизбежно для установки любого аудио-драйвера, любым инструментом, и не то, что скрипт должен обходить.
+- Ждёт, пока ты пройдёшь мастер установки самого установщика (просто пара нажатий "Далее", настраивать ничего не нужно).
+
+Если хочешь сделать это сам, а не нажимать кнопку:
+1. Скачай <https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip> вручную.
+2. Распакуй архив.
+3. Правой кнопкой по `VBCABLE_Setup_x64.exe` → **Запуск от имени администратора**.
+4. Пройди мастер установки.
+
+**Шаг 2 — перезагрузка.** И сам установщик VB-Cable, и документация
+NirSoft прямо говорят, что для полной регистрации драйвера в Windows
+требуется перезагрузка. Не пропускай этот шаг, даже если кажется, что
+всё уже работает — наполовину зарегистрированные аудио-драйверы дают
+странные, трудноотлаживаемые глюки.
+
+**Шаг 3 — последняя настройка: "Прослушать с данного устройства".**
+После установки VB-Cable (и это правда важный нюанс — как только звук
+исключённого приложения попадает на кабель, никуда вслух он не
+воспроизводится, пока не сказать Windows дублировать его на настоящие
+наушники). Снова открой панель плагина после перезагрузки — теперь там
+появится кнопка **Настроить автоматически**:
+- Нажми её — появится ещё один (последний) запрос повышенных прав,
+  потому что эта настройка живёт в части реестра, куда может писать
+  только администратор.
+- Плагин найдёт записывающее устройство кабеля ("CABLE Output") и
+  включит "Прослушать с данного устройства", указав то устройство,
+  которое сейчас является твоим настоящим выводом по умолчанию.
+
+Если предпочитаешь настроить вручную (или кнопка автоматической
+настройки выдаст ошибку):
+1. Правой кнопкой по значку динамика в трее → **Звуки** (или открой
+   **Панель управления → Звук**).
+2. Перейди на вкладку **Запись**.
+3. Найди **CABLE Output**, правой кнопкой → **Свойства**.
+4. Открой вкладку **Прослушать**.
+5. Поставь галочку **Прослушать с данного устройства**.
+6. В выпадающем списке ниже выбери свои реальные наушники/колонки (не
+   ещё одно устройство-кабель).
+7. Нажми **ОК**.
+
+**На этом всё — после шагов 1-3 всё остальное работает автоматически**,
+точно как на Linux: выбираешь приложение для исключения, жмёшь
+Exclude, демонстрируешь экран, включаешь Share Audio в Discord, готово.
+Настройку кабеля делаешь один раз за всё время на этом ПК.
+
+**Если звук всё равно не идёт после всего этого:** перепроверь, что на
+вкладке "Прослушать" выбрано именно твоё текущее реальное устройство
+вывода (а не оставшийся выбор от устройства, которым ты больше не
+пользуешься), и что громкость "CABLE Output" на вкладке "Запись" не
+выключена (не Mute).
 
 #### Windows: зависимость от svcl.exe
 

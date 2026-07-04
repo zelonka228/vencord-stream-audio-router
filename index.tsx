@@ -178,6 +178,53 @@ function LinuxPanel() {
     );
 }
 
+function WindowsListenStatus() {
+    const t = useT();
+    const [configured, setConfigured] = useState<boolean | null>(null);
+    const [configuring, setConfiguring] = useState(false);
+
+    async function check() {
+        try {
+            setConfigured(await Native.windowsIsCableListenConfigured());
+        } catch (e) {
+            notifyError(e);
+        }
+    }
+
+    useEffect(() => { check(); }, []);
+
+    async function handleConfigure() {
+        setConfiguring(true);
+        try {
+            await Native.windowsEnableCableListen();
+            notifySuccess(t.windowsListenConfiguredSuccess);
+            await check();
+        } catch (e) {
+            notifyError(e);
+        } finally {
+            setConfiguring(false);
+        }
+    }
+
+    if (configured === null) {
+        return <Forms.FormText className={Margins.top8}>{t.windowsCheckingListen}</Forms.FormText>;
+    }
+
+    if (configured) {
+        return <Forms.FormText className={Margins.top8}>{t.windowsListenConfigured}</Forms.FormText>;
+    }
+
+    return (
+        <>
+            <Forms.FormText className={Margins.top8}>{t.windowsVirtualCableListenNote}</Forms.FormText>
+            <Button onClick={handleConfigure} disabled={configuring} color={Button.Colors.GREEN} className={Margins.top8}>
+                {t.windowsConfigureListenButton}
+            </Button>
+            <Forms.FormText className={Margins.top8}>{t.windowsManualListenHeading}</Forms.FormText>
+        </>
+    );
+}
+
 function WindowsDeviceStatus() {
     const t = useT();
     const [hasSecondDevice, setHasSecondDevice] = useState<boolean | null>(null);
@@ -233,9 +280,7 @@ function WindowsDeviceStatus() {
                     {t.windowsInstallVirtualCableButton}
                 </Button>
             )}
-            {(cableInstalled || installStarted) && (
-                <Forms.FormText className={Margins.top8}>{t.windowsVirtualCableListenNote}</Forms.FormText>
-            )}
+            {(cableInstalled || installStarted) && <WindowsListenStatus />}
             <Divider className={Margins.top16} />
         </>
     );
