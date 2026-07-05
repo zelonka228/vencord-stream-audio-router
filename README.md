@@ -2,8 +2,8 @@
 
 # StreamAudioRouter
 
-### A Vencord plugin: share one app/window's video while Discord's "Share Audio" captures a *different* app's sound — without ever touching your mic.
-### Плагин для Vencord: транслируешь окно одного приложения — а "Share Audio" Discord передаёт звук другого. Микрофон и голос при этом не трогаются.
+### A Vencord plugin: screen-share as usual, but exclude one app's sound (e.g. your game) from Discord's "Share Audio" — everything else keeps streaming through. Your mic is never touched.
+### Плагин для Vencord: демонстрируешь экран как обычно, но исключаешь звук одного приложения (например, игры) из "Share Audio" в Discord — всё остальное по-прежнему передаётся. Микрофон не трогается.
 
 <br>
 
