@@ -342,6 +342,23 @@ export async function isVirtualCableInstalled(): Promise<boolean> {
 }
 
 /**
+ * Runs an arbitrary PowerShell script elevated (triggers the normal Windows
+ * UAC prompt - this cannot be bypassed, and shouldn't be, for anything that
+ * touches drivers or HKLM). The script is passed via `-EncodedCommand`
+ * (base64 of UTF-16LE) instead of interpolating it into a quoted command
+ * string - that sidesteps the multi-layer quoting hell of nesting
+ * cmd.exe -> powershell.exe -> Start-Process -> another powershell.exe,
+ * where manually escaped quotes are extremely easy to get subtly wrong.
+ */
+async function runElevatedPowerShell(script: string, timeoutMs: number): Promise<void> {
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    await exec(
+        `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile -EncodedCommand ${encoded}' -Verb RunAs -Wait"`,
+        { timeout: timeoutMs }
+    );
+}
+
+/**
  * Downloads the VB-Audio Virtual Cable driver installer and launches it
  * elevated. Windows requires admin rights and a reboot to install any
  * audio driver - neither can be scripted away, so this only gets the user
@@ -372,14 +389,9 @@ export async function installVirtualCable(): Promise<void> {
     const setupPath = join(stageDir, setupName);
     if (!existsSync(setupPath)) throw new Error("VB-Cable setup executable failed to extract.");
 
-    // Launching an elevated process from an unelevated one requires the
-    // "RunAs" verb - Node has no built-in way to do this, so we go through
-    // PowerShell's Start-Process, which triggers the normal Windows UAC
-    // prompt (this cannot be bypassed, and shouldn't be - it's a real
-    // driver install).
-    await exec(
-        `powershell -NoProfile -Command "Start-Process -FilePath '${setupPath}' -Verb RunAs -Wait"`,
-        { timeout: 5 * 60 * 1000 }
+    await runElevatedPowerShell(
+        `Start-Process -FilePath '${setupPath.replace(/'/g, "''")}' -Verb RunAs -Wait`,
+        5 * 60 * 1000
     ).catch((e: any) => {
         throw new Error(`Could not launch the VB-Cable installer: ${e?.message ?? e}`);
     });
@@ -441,10 +453,7 @@ export async function enableCableListen(): Promise<void> {
         `reg add "${regPath}" /v "${LISTEN_PROPERTY_GUID},0" /t REG_DWORD /d 1 /f ; ` +
         `reg add "${regPath}" /v "${LISTEN_PROPERTY_GUID},1" /t REG_SZ /d "${target.itemId}" /f`;
 
-    await exec(
-        `powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile -Command \\"${script}\\"' -Verb RunAs -Wait"`,
-        { timeout: 60 * 1000 }
-    ).catch((e: any) => {
+    await runElevatedPowerShell(script, 60 * 1000).catch((e: any) => {
         throw new Error(`Could not configure audio Listen: ${e?.message ?? e}`);
     });
 }

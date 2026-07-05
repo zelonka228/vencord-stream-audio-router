@@ -2,9 +2,9 @@
  * StreamAudioRouter for Vencord
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Lets you screen-share one window/app (e.g. a game) while Discord's
- * "Share Audio" stream captures a *different* app's audio (e.g. your
- * browser's music) instead of the game's own sound.
+ * Lets you screen-share as usual, but exclude one app's audio (e.g. a
+ * game) from Discord's "Share Audio" stream - whatever's left (e.g. your
+ * browser) keeps streaming through.
  *
  * This works entirely through Discord's own built-in "Share Audio" /
  * "Stream With Audio" toggle (shown when you start a screen share) - that
@@ -497,7 +497,7 @@ const settings = definePluginSettings({});
 
 export default definePlugin({
     name: "StreamAudioRouter",
-    description: "Screen-share one app/window while Discord's Share Audio captures a different app's sound (e.g. share a game, stream your browser's music) - without touching your mic.",
+    description: "Screen-share as usual, but exclude one app's sound (e.g. your game) from Discord's Share Audio - everything else keeps streaming through, and your mic is never touched.",
     tags: ["Voice", "Media"],
     authors: [
         { name: "zelonka228", id: 0n }
