@@ -1,0 +1,96 @@
+Two-round adversarial review by 3 parallel per-OS agents: 15 real bugs found+fixed
+
+Ran three parallel subagents (one per platform backend), each doing at
+least 3 rounds of fresh-eyes review -> fix -> re-verify against a real
+cloned Vencord tree, then a second full pass repeating the same process
+on top of the first round's fixes. Total: 15 real, concrete bugs found
+and fixed across both rounds (not counting style nitpicks).
+
+Linux (platform/linux.ts) - 4 bugs across 2 rounds:
+- findModuleIdsByArgument's Argument capture used \s* (matches newlines),
+  so a module with an empty "Argument:" line (real, e.g.
+  module-suspend-on-idle) bled the next line's text into the match,
+  risking false positives/negatives in loopback-exists checks and
+  restoreAudio's teardown lookup. Fixed to horizontal-whitespace-only.
+- parseSinkInputs' quoted-property regex didn't account for pactl's
+  backslash-escaping of embedded quotes (application.name = "He said
+  \"Hi\""), truncating any name containing a literal quote. Fixed with
+  an escape-aware capture plus an unescape step.
+- ensureLocalLoopback only checked whether *any* loopback module existed
+  for the excluded sink's monitor, without checking its sink= target
+  still matched the current default sink - if the user's default output
+  changes while an app is excluded, the loopback kept feeding a stale
+  sink, silently going quiet locally while reporting success.
+- The fix above had its own bug, caught in the very next round: it used
+  .some() to decide whether to skip recreation, so if multiple loopback
+  modules existed (crash leftover, manual pactl use) it could skip
+  cleanup of a stale duplicate whenever any one of them matched. Fixed
+  by partitioning stale vs current and always unloading stale ones.
+
+Windows (platform/windows.ts) - 7 bugs across 2 rounds:
+- excludeAppAudio's process-id regex rejected legitimate exe names
+  containing spaces. Loosened to match the actual threat model (argv
+  injection via execFile, not shell metacharacters).
+- excludeAppAudio could pick VB-Cable itself as the "alternate device"
+  even when Listen wasn't confirmed configured, silently muting the
+  excluded app for the user. Extracted a pure pickAlternateDevice()
+  helper that prefers real devices, falls back to the cable only when
+  Listen is confirmed.
+- The "Listen to this device" registry automation (enableCableListen /
+  isCableListenConfigured) was built on an assumed GUID property layout
+  that live registry inspection on this real machine proved wrong (no
+  REG_DWORD flag at the assumed index; REG_BINARY values appear at
+  different indices on real endpoints). Rather than guess further,
+  enableCableListen() now refuses to write and throws an honest error
+  with manual instructions.
+- Second round found the first round's replacement heuristic (matching
+  a specific REG_BINARY byte pattern) was non-discriminating - the same
+  bytes appear on every endpoint with that GUID at all, unrelated ones
+  included. isCableListenConfigured() now always returns false rather
+  than trust an unreliable signal, consistent with enableCableListen()
+  refusing to guess.
+- ensureSvcl()/installVirtualCable()'s zip extraction crashed (ENOENT)
+  on any entry with a nested path, since parent directories were never
+  created before writing. Fixed with recursive mkdir per entry and
+  directory-entry skipping.
+- That fix introduced a zip-slip path-traversal risk (an entry named
+  e.g. "../../evil.exe" could resolve outside the staging directory).
+  Added a pure safeExtractPath() helper that rejects any entry escaping
+  the target directory, used by both extraction call sites.
+- Fixed the resulting dead UI: since Listen configuration can no longer
+  succeed automatically, removed the "Configure automatically" button
+  from WindowsListenStatus (index.tsx) - it would always fail - and
+  show the honest manual instructions directly instead. Removed the now
+  provably-unreachable en/ru strings for that button and its success
+  toast; merged the "one remaining step" framing into the single manual
+  instruction string in both languages.
+
+macOS (platform/macos.ts, index.tsx, README.md) - 4 bugs/inaccuracies
+across 2 rounds:
+- MacPanel used a hardcoded "brew install blackhole-2ch" literal in JSX
+  instead of calling the already-exported (but previously unused)
+  Native.macosGetInstallCommand(), leaving two sources of truth that
+  could drift apart. Wired the UI to the native call.
+- The fix above introduced its own bug, self-caught next round: the new
+  state still fell back to the hardcoded literal on any IPC failure,
+  reintroducing the same drift risk, and had a race where the
+  not-found UI could render the fallback before the real value arrived.
+  Fixed with a proper loading/failed/loaded tri-state.
+- That fix had a dead end: a permanently-rejected native call left the
+  panel stuck on "Checking for BlackHole..." forever. Fixed with a
+  correct tri-state plus a new macNotFoundNoCommand string so the user
+  always eventually sees install instructions.
+- README's OS comparison table told readers to see the macOS walkthrough
+  "above" when it's actually below, in both English and Russian.
+
+Every fix was verified with the existing unit test suites (grew from
+18+16 to 23+23 tests across Linux/Windows) plus tsc --noEmit, eslint,
+and a full esbuild build against a real cloned Vencord source tree
+(zero errors/warnings at every checkpoint). One post-review cleanup was
+done by hand after both rounds: removed the now-dead "Configure
+automatically" Listen button from the UI (index.tsx, strings.ts) since
+the underlying capability was proven unreliable and disabled - keeping
+a button that always fails would be worse than a plain manual
+instruction.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>

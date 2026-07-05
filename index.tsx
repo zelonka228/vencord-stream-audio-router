@@ -178,50 +178,20 @@ function LinuxPanel() {
     );
 }
 
+/**
+ * There used to be an automatic "Configure" button here that wrote the
+ * "Listen to this device" registry properties for VB-Cable's recording
+ * endpoint. A code review that actually inspected the live Windows
+ * registry found the assumed property scheme doesn't match reality and
+ * couldn't be reliably distinguished from other unrelated properties -
+ * see the long comment above `enableCableListen` in platform/windows.ts.
+ * Automating it was disabled rather than risk writing wrong values to a
+ * live audio device's registry key, so this is manual-only, honestly.
+ */
 function WindowsListenStatus() {
     const t = useT();
-    const [configured, setConfigured] = useState<boolean | null>(null);
-    const [configuring, setConfiguring] = useState(false);
-
-    async function check() {
-        try {
-            setConfigured(await Native.windowsIsCableListenConfigured());
-        } catch (e) {
-            notifyError(e);
-        }
-    }
-
-    useEffect(() => { check(); }, []);
-
-    async function handleConfigure() {
-        setConfiguring(true);
-        try {
-            await Native.windowsEnableCableListen();
-            notifySuccess(t.windowsListenConfiguredSuccess);
-            await check();
-        } catch (e) {
-            notifyError(e);
-        } finally {
-            setConfiguring(false);
-        }
-    }
-
-    if (configured === null) {
-        return <Forms.FormText className={Margins.top8}>{t.windowsCheckingListen}</Forms.FormText>;
-    }
-
-    if (configured) {
-        return <Forms.FormText className={Margins.top8}>{t.windowsListenConfigured}</Forms.FormText>;
-    }
-
     return (
-        <>
-            <Forms.FormText className={Margins.top8}>{t.windowsVirtualCableListenNote}</Forms.FormText>
-            <Button onClick={handleConfigure} disabled={configuring} color={Button.Colors.GREEN} className={Margins.top8}>
-                {t.windowsConfigureListenButton}
-            </Button>
-            <Forms.FormText className={Margins.top8}>{t.windowsManualListenHeading}</Forms.FormText>
-        </>
+        <Forms.FormText className={Margins.top8}>{t.windowsManualListenHeading}</Forms.FormText>
     );
 }
 
@@ -400,10 +370,20 @@ function WindowsPanel() {
 function MacPanel() {
     const t = useT();
     const [installed, setInstalled] = useState<boolean | null>(null);
+    // undefined = still loading, null = the native call failed/threw, string = loaded successfully.
+    const [installCommand, setInstallCommand] = useState<string | null | undefined>(undefined);
 
     useEffect(() => {
         Native.macosCheckBlackHole().then(r => setInstalled(r.installed)).catch(() => setInstalled(false));
+        Native.macosGetInstallCommand().then(setInstallCommand).catch(() => setInstallCommand(null));
     }, []);
+
+    // Only block the "not found" UI on installCommand while it's genuinely
+    // still in flight (undefined). If the native call already failed
+    // (null), don't hang on "Checking..." forever - fall through and show
+    // the not-found message anyway, just without the exact command text.
+    const isChecking = installed === null || (installed === false && installCommand === undefined);
+    const notFoundReady = installed === false && installCommand !== undefined;
 
     return (
         <>
@@ -412,10 +392,14 @@ function MacPanel() {
             </Forms.FormText>
             <Divider className={Margins.top16} />
 
-            {installed === null && <Forms.FormText className={Margins.top8}>{t.macChecking}</Forms.FormText>}
-            {installed === false && (
+            {isChecking && (
+                <Forms.FormText className={Margins.top8}>{t.macChecking}</Forms.FormText>
+            )}
+            {notFoundReady && (
                 <Forms.FormText className={Margins.top8}>
-                    {t.macNotFoundPrefix}<code>brew install blackhole-2ch</code>
+                    {installCommand
+                        ? <>{t.macNotFoundPrefix}<code>{installCommand}</code></>
+                        : t.macNotFoundNoCommand}
                 </Forms.FormText>
             )}
             {installed === true && (

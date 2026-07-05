@@ -11,14 +11,30 @@
 
 import assert from "node:assert/strict";
 
-import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, parseCsvLine, parseSvclCsv } from "../platform/windows.ts";
+import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, parseCsvLine, parseSvclCsv, pickAlternateDevice, safeExtractPath } from "../platform/windows.ts";
+import type { RenderDevice } from "../platform/windows.ts";
 
 let passed = 0;
 let failed = 0;
 
-function test(name: string, fn: () => void) {
+const pending: Promise<void>[] = [];
+
+function test(name: string, fn: () => void | Promise<void>) {
     try {
-        fn();
+        const result = fn();
+        if (result instanceof Promise) {
+            pending.push(
+                result.then(() => {
+                    passed++;
+                    console.log(`  ok - ${name}`);
+                }).catch(e => {
+                    failed++;
+                    console.error(`  FAIL - ${name}`);
+                    console.error(e);
+                })
+            );
+            return;
+        }
         passed++;
         console.log(`  ok - ${name}`);
     } catch (e) {
@@ -158,6 +174,102 @@ test("does not match a Render-direction device that happens to have 'cable' in i
 });
 
 // ---------------------------------------------------------------------------
+
+console.log("pickAlternateDevice");
+
+function device(name: string, isDefault: boolean): RenderDevice {
+    return { id: name, itemId: name, name, isDefault };
+}
+
+test("prefers a real non-default device over the cable, regardless of array order", () => {
+    // Cable listed first - a naive `.find(d => !d.isDefault)` would pick it
+    // and silently mute the excluded app if Listen isn't configured.
+    const devices = [device("Speakers", true), device("CABLE Input", false), device("Headphones", false)];
+    const picked = pickAlternateDevice(devices, false);
+    assert.equal(picked?.name, "Headphones");
+});
+
+test("falls back to the cable only when Listen is already configured", () => {
+    const devices = [device("Speakers", true), device("CABLE Input", false)];
+    assert.equal(pickAlternateDevice(devices, false), null);
+    assert.equal(pickAlternateDevice(devices, true)?.name, "CABLE Input");
+});
+
+test("returns null when there is no non-default device at all", () => {
+    const devices = [device("Speakers", true)];
+    assert.equal(pickAlternateDevice(devices, true), null);
+});
+
+// ---------------------------------------------------------------------------
+
+// Regression test for a real bug found in round 2: ensureSvcl() and
+// installVirtualCable() both extract a downloaded zip by doing
+// `writeFile(join(dir, name), data)` for every entry `unzipSync()` returns.
+// fs.writeFile does NOT create missing parent directories, so any zip entry
+// with a nested path (e.g. a driver pack shipping "x64/driver.sys" alongside
+// its setup exe) used to throw ENOENT instead of extracting. The fix creates
+// each entry's parent directory first. This test exercises that exact
+// write-loop pattern standalone (no fflate/network/electron needed) against
+// a simulated nested zip listing to prove the parent-dir creation actually
+// prevents the crash.
+console.log("\nzip extraction (nested-path regression)");
+
+test("writing a nested zip entry succeeds when parent dirs are created first", async () => {
+    const { mkdtemp, writeFile: writeFileP, mkdir: mkdirP, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join: joinPath, dirname } = await import("node:path");
+
+    const stageDir = await mkdtemp(joinPath(tmpdir(), "svcl-zip-test-"));
+
+    // Simulates what unzipSync() would return for a zip containing a
+    // top-level file plus a nested subfolder - the shape that used to break.
+    const files: Record<string, Uint8Array> = {
+        "VBCABLE_Setup_x64.exe": new Uint8Array([1, 2, 3]),
+        "x64/vbaudio_cable64.sys": new Uint8Array([4, 5, 6]),
+        "x64/": new Uint8Array(0) // directory entry, as some zip tools emit
+    };
+
+    for (const [name, data] of Object.entries(files)) {
+        if (name.endsWith("/")) continue;
+        const dest = joinPath(stageDir, name);
+        await mkdirP(dirname(dest), { recursive: true });
+        await writeFileP(dest, data);
+    }
+
+    const nested = await readFile(joinPath(stageDir, "x64", "vbaudio_cable64.sys"));
+    assert.deepEqual([...nested], [4, 5, 6]);
+});
+
+// ---------------------------------------------------------------------------
+
+// Regression test for a real bug found in round 3: the zip-extraction loops
+// in ensureSvcl() and installVirtualCable() resolve each entry's path with
+// `join(extractDir, entryName)`, where entryName comes straight from the
+// downloaded zip. A malicious/corrupted archive with a "zip slip" entry name
+// (e.g. "../../evil.exe") would resolve outside the intended staging
+// directory - and since the round-2 fix now creates missing parent
+// directories automatically, that could silently create attacker-chosen
+// directories outside the sandbox. safeExtractPath() rejects any entry that
+// doesn't resolve inside extractDir. Pure function - testable directly.
+console.log("\nsafeExtractPath");
+
+test("resolves a normal nested entry inside the extraction directory", () => {
+    const resolved = safeExtractPath("C:\\stage", "x64/driver.sys");
+    assert.ok(resolved.startsWith("C:\\stage"));
+    assert.ok(resolved.endsWith("driver.sys"));
+});
+
+test("throws on a zip-slip entry name that escapes the extraction directory", () => {
+    assert.throws(() => safeExtractPath("C:\\stage", "../../evil.exe"));
+});
+
+test("throws on an absolute-path-like entry name", () => {
+    assert.throws(() => safeExtractPath("C:\\stage", "..\\..\\Windows\\System32\\evil.dll"));
+});
+
+// ---------------------------------------------------------------------------
+
+await Promise.all(pending);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

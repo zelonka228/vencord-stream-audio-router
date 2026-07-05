@@ -141,7 +141,7 @@ On **Linux and Windows**, the panel has:
 - **Include back / reset to normal** (red) - undoes it, whether you excluded one app or several in a row.
 - Windows additionally shows a manual fallback button at the bottom, opening the OS's own settings page, for when there's no second output device to automate with.
 
-On **macOS**, the panel instead shows BlackHole detection and buttons that open the relevant system settings (see the macOS walkthrough above) - there's no dropdown there, since macOS has no per-app routing to automate at all.
+On **macOS**, the panel instead shows BlackHole detection and buttons that open the relevant system settings (see the macOS walkthrough below) - there's no dropdown there, since macOS has no per-app routing to automate at all.
 
 The panel's text automatically follows **Discord's own display language** - if Discord is set to Russian, the plugin's UI shows in Russian; any other language shows English. There's no separate language setting for the plugin itself.
 
@@ -526,7 +526,7 @@ PulseAudio сам возвращает исключённое приложени
 - **Include back / reset to normal** (красная) — откатывает всё обратно, независимо от того, исключил ты одно приложение или несколько подряд.
 - На Windows внизу дополнительно есть кнопка ручного способа — открывает штатную страницу настроек ОС, на случай если второго устройства вывода нет и автоматизировать нечем.
 
-На **macOS** вместо этого показывается проверка наличия BlackHole и кнопки, которые открывают нужные системные настройки (см. инструкцию по macOS выше) — там нет выпадающего списка, поскольку в macOS вообще нет маршрутизации по приложениям, которую можно было бы автоматизировать.
+На **macOS** вместо этого показывается проверка наличия BlackHole и кнопки, которые открывают нужные системные настройки (см. инструкцию по macOS ниже) — там нет выпадающего списка, поскольку в macOS вообще нет маршрутизации по приложениям, которую можно было бы автоматизировать.
 
 Текст в панели автоматически подстраивается под **язык интерфейса самого Discord** — если в Discord выбран русский, плагин тоже покажет русский текст; при любом другом языке — английский. Отдельной настройки языка у самого плагина нет.
 

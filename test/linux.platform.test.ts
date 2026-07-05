@@ -126,6 +126,18 @@ test("handles CRLF line endings", () => {
     assert.equal(result[0].name, "VLC");
 });
 
+test("unescapes embedded quotes/backslashes pactl escapes in property values", () => {
+    const raw = `
+Sink Input #8
+	Properties:
+		application.name = "He said \\"Hi\\""
+`.trim();
+
+    const result = parseSinkInputs(raw);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].name, `He said "Hi"`);
+});
+
 test("ignores unrelated leading noise before the first block", () => {
     const raw = `Some unrelated warning line\nSink Input #10\n\tProperties:\n\t\tapplication.name = "OBS"`;
     const result = parseSinkInputs(raw);
@@ -226,6 +238,32 @@ Module #1
     assert.deepEqual(findModuleIdsByArgument(raw, "source=VencordStreamMix.monitor"), []);
 });
 
+test("handles a module with an empty Argument line without bleeding into the next line", () => {
+    // Real pactl prints a bare "Argument: " (trailing space, no value) for
+    // modules loaded with no arguments, e.g. module-suspend-on-idle. The next
+    // line's text must never be picked up as the argument value.
+    const raw = `
+Module #1
+	Name: module-suspend-on-idle
+	Argument:
+	Usage counter: n/a
+
+Module #2
+	Name: module-loopback
+	Argument: source=VencordStreamMix.monitor sink=A
+`.trim();
+
+    assert.deepEqual(findModuleIdsByArgument(raw, "source=VencordStreamMix.monitor"), ["2"]);
+    assert.deepEqual(findModuleIdsByArgument(raw, "Usage counter: n/a"), []);
+});
+
+test("handles CRLF line endings without bleeding an empty Argument into the next line", () => {
+    const raw = "Module #1\r\n\tArgument: source=VencordStreamMix.monitor sink=A\r\n\r\n" +
+        "Module #2\r\n\tArgument: \r\n\tUsage counter: n/a\r\n";
+
+    assert.deepEqual(findModuleIdsByArgument(raw, "source=VencordStreamMix.monitor"), ["1"]);
+});
+
 test("handles modules with no Argument line at all", () => {
     const raw = `
 Module #1
@@ -233,6 +271,56 @@ Module #1
 `.trim();
 
     assert.deepEqual(findModuleIdsByArgument(raw, "anything"), []);
+});
+
+test("can detect a loopback whose source matches but whose sink target has changed (stale after default-sink switch)", () => {
+    // Regression: ensureLocalLoopback() must not treat a loopback that still
+    // points at an OLD default sink as "already set up" - it needs to notice
+    // the sink= argument no longer matches the CURRENT default sink so it can
+    // tear down and recreate. This test exercises the two lookups it combines.
+    const raw = `
+Module #5
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=old_headphones latency_msec=1
+`.trim();
+
+    const bySource = findModuleIdsByArgument(raw, "source=VencordExcludedAudio.monitor");
+    assert.deepEqual(bySource, ["5"]);
+
+    // The user switched their default sink to "new_speakers" - module #5 should
+    // NOT be found when searching by the new sink argument, proving it's stale.
+    const byNewSink = findModuleIdsByArgument(raw, "sink=new_speakers");
+    assert.deepEqual(byNewSink, []);
+
+    // But it should be found by the sink it actually still targets.
+    const byOldSink = findModuleIdsByArgument(raw, "sink=old_headphones");
+    assert.deepEqual(byOldSink, ["5"]);
+});
+
+test("distinguishes a stale duplicate loopback from a current one when both are loaded at once", () => {
+    // Regression: if two loopback modules already exist (e.g. a leftover from
+    // a crash, or manual pactl use) - one pointed at an old sink, one at the
+    // current default - ensureLocalLoopback() must be able to tell them apart
+    // by id so it only tears down the stale one and keeps the current one,
+    // rather than treating "any match" as "everything is fine".
+    const raw = `
+Module #1
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=old_sink latency_msec=1
+
+Module #2
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=new_sink latency_msec=1
+`.trim();
+
+    const existing = findModuleIdsByArgument(raw, "source=VencordExcludedAudio.monitor");
+    assert.deepEqual(existing, ["1", "2"]);
+
+    const currentDefaultIds = new Set(findModuleIdsByArgument(raw, "sink=new_sink"));
+    assert.deepEqual([...currentDefaultIds], ["2"]);
+
+    const stale = existing.filter(id => !currentDefaultIds.has(id));
+    assert.deepEqual(stale, ["1"]);
 });
 
 // ---------------------------------------------------------------------------

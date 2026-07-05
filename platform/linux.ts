@@ -45,11 +45,15 @@ export function parseSinkInputs(raw: string): AudioApp[] {
         const idMatch = block.match(/Sink Input #(\d+)/);
         if (!idMatch) continue;
 
+        // pactl escapes embedded quotes/backslashes in property values as \" / \\,
+        // so a plain [^"]* class would stop at the first escaped quote and
+        // truncate names like `He said \"Hi\"`. Match escaped-or-non-quote runs,
+        // then unescape.
         const nameMatch =
-            block.match(/application\.name\s*=\s*"([^"]*)"/) ??
-            block.match(/media\.name\s*=\s*"([^"]*)"/);
+            block.match(/application\.name\s*=\s*"((?:[^"\\]|\\.)*)"/) ??
+            block.match(/media\.name\s*=\s*"((?:[^"\\]|\\.)*)"/);
 
-        const name = nameMatch?.[1]?.trim();
+        const name = nameMatch?.[1]?.replace(/\\(.)/g, "$1").trim();
 
         apps.push({
             id: idMatch[1],
@@ -104,7 +108,12 @@ export function findModuleIdsByArgument(raw: string, needle: string): string[] {
     const needleRegex = new RegExp(`(?:^|\\s)${escapeRegExp(needle)}(?:\\s|$)`);
 
     for (const block of blocks) {
-        const argMatch = block.match(/Argument:\s*(.*)/);
+        // [^\S\r\n]* (not \s*) so we only skip horizontal whitespace after the
+        // colon - \s* would also swallow the line break when Argument is empty
+        // (e.g. module-suspend-on-idle prints a bare "Argument: " line), which
+        // let (.*) bleed into the next line's text and could false-positive
+        // against the needle.
+        const argMatch = block.match(/Argument:[^\S\r\n]*(.*)/);
         if (!argMatch) continue;
         if (!needleRegex.test(argMatch[1])) continue;
 
@@ -161,12 +170,35 @@ async function ensureExcludedSink(): Promise<void> {
 }
 
 async function ensureLocalLoopback(): Promise<void> {
-    const modulesRaw = await pactl(["list", "modules"]);
-    const existing = findModuleIdsByArgument(modulesRaw, `source=${EXCLUDED_SINK_NAME}.monitor`);
-    if (existing.length > 0) return;
-
     const defaultSink = (await pactl(["get-default-sink"])).trim();
     if (!defaultSink) throw new Error("Could not determine the default output sink.");
+
+    const modulesRaw = await pactl(["list", "modules"]);
+    const existing = findModuleIdsByArgument(modulesRaw, `source=${EXCLUDED_SINK_NAME}.monitor`);
+
+    if (existing.length > 0) {
+        // A loopback already exists, but it may still be pointed at a sink that
+        // was the default at the time it was created. If the user has since
+        // switched their default output device (e.g. unplugged headphones,
+        // picked a different speaker), that stale loopback silently stops
+        // reaching whatever is now the default sink - the excluded app would
+        // go quiet locally even though everything still "looks" wired up.
+        //
+        // There can also be more than one loopback module already loaded (e.g.
+        // a leftover duplicate from a crash mid-operation, or the user poking
+        // at `pactl` by hand). Partition them: keep at most the one(s) already
+        // pointed at the CURRENT default sink, and unload every other one so
+        // we never leave stale/duplicate loopbacks running (which would double
+        // up the audio through two paths at once).
+        const currentDefaultIds = new Set(findModuleIdsByArgument(modulesRaw, `sink=${defaultSink}`));
+        const stale = existing.filter(id => !currentDefaultIds.has(id));
+        for (const id of stale) {
+            await pactl(["unload-module", id]).catch(() => { });
+        }
+
+        const stillPointingAtCurrentDefault = existing.some(id => currentDefaultIds.has(id));
+        if (stillPointingAtCurrentDefault) return;
+    }
 
     await pactl([
         "load-module",

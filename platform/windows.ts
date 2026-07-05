@@ -28,7 +28,7 @@
 
 import { exec as execCb, execFile } from "child_process";
 import { mkdir, writeFile } from "fs/promises";
-import { join } from "path";
+import { dirname, join, sep } from "path";
 import { promisify } from "util";
 
 const exec = promisify(execCb);
@@ -164,6 +164,25 @@ function basename(path: string): string {
 }
 
 /**
+ * Resolves a zip entry name against an extraction directory and throws if
+ * the entry tries to escape it via ".." path segments ("zip slip") - e.g. a
+ * malicious/corrupted archive with an entry literally named
+ * "../../../Windows/System32/evil.dll". SVCL_URL/VB_CABLE_URL are fixed
+ * HTTPS URLs, not attacker-controlled input, but defense in depth costs
+ * nothing here, especially since extraction now creates nested parent
+ * directories on demand (see ensureSvcl()/installVirtualCable()) which would
+ * otherwise happily create them anywhere `join()` resolves to. Pure function.
+ */
+export function safeExtractPath(extractDir: string, entryName: string): string {
+    const dest = join(extractDir, entryName);
+    const normalizedDir = join(extractDir, ".");
+    if (dest !== normalizedDir && !dest.startsWith(normalizedDir + sep)) {
+        throw new Error(`Refusing to extract zip entry outside the target directory: ${JSON.stringify(entryName)}`);
+    }
+    return dest;
+}
+
+/**
  * Extracts the list of apps currently playing audio from parsed svcl rows.
  * Pure function.
  */
@@ -231,7 +250,15 @@ async function ensureSvcl(): Promise<string> {
 
     await mkdir(dir, { recursive: true });
     for (const [name, data] of Object.entries(files)) {
-        await writeFile(join(dir, name), data);
+        // Zip entries can include nested paths (e.g. "docs/readme.txt");
+        // writeFile() does not create missing parent directories on its own,
+        // so a nested entry would otherwise throw ENOENT instead of
+        // extracting. Skip directory entries themselves (zero-length name
+        // ending in "/") since there's nothing to write for them.
+        if (name.endsWith("/")) continue;
+        const dest = safeExtractPath(dir, name);
+        await mkdir(dirname(dest), { recursive: true });
+        await writeFile(dest, data);
     }
 
     if (!existsSync(exe)) throw new Error("svcl.exe was not found in the downloaded archive.");
@@ -272,6 +299,26 @@ export async function listAudioApps(): Promise<AudioApp[]> {
 const excludedApps = new Map<string, string>();
 
 /**
+ * Picks which device to route the excluded app onto: prefers a real
+ * (non-cable) non-default device, since svcl.exe's row order isn't
+ * guaranteed to put a real headset ahead of VB-Cable's "CABLE Input", and
+ * routing onto the cable while "Listen to this device" isn't configured yet
+ * would silently mute the excluded app for the user - exactly the failure
+ * mode this backend exists to avoid. Only falls back to the cable if Listen
+ * has already been set up. Pure function.
+ */
+export function pickAlternateDevice(devices: RenderDevice[], listenReady: boolean): RenderDevice | null {
+    const nonDefaultDevices = devices.filter(d => !d.isDefault);
+    const realAlternate = nonDefaultDevices.find(d => !d.name.toLowerCase().includes("cable"));
+    if (realAlternate) return realAlternate;
+
+    const cableAlternate = nonDefaultDevices.find(d => d.name.toLowerCase().includes("cable"));
+    if (cableAlternate && listenReady) return cableAlternate;
+
+    return null;
+}
+
+/**
  * Moves the given app's audio output to a different real playback device
  * than the current system default, so it's off whatever Discord's "Share
  * Audio" captures. Requires at least 2 real playback devices - throws a
@@ -279,15 +326,36 @@ const excludedApps = new Map<string, string>();
  * be worse than doing nothing.
  */
 export async function excludeAppAudio(processId: string): Promise<void> {
-    if (!/^[\w.-]+\.exe$/i.test(processId)) throw new Error(`Invalid process id: ${JSON.stringify(processId)}`);
+    // Real Windows executable filenames can legitimately contain spaces,
+    // parentheses, ampersands, etc. (e.g. "Report Viewer.exe") - the ids
+    // fed in here come straight from extractAudioApps()'s basename() of a
+    // trusted svcl.exe process path, so this only needs to reject path
+    // separators / drive-letter-ish inputs (defense in depth for argv
+    // injection into svcl.exe, since this is passed via execFile, not a
+    // shell), not restrict to a narrow identifier charset.
+    if (!/^[^\\/:*?"<>|]+\.exe$/i.test(processId)) throw new Error(`Invalid process id: ${JSON.stringify(processId)}`);
 
     const rows = await getRows();
     const devices = extractRenderDevices(rows);
 
     const defaultDevice = devices.find(d => d.isDefault);
-    const alternateDevice = devices.find(d => !d.isDefault);
+    const hasCableAlternate = devices.some(d => !d.isDefault && d.name.toLowerCase().includes("cable"));
+    const hasRealAlternate = devices.some(d => !d.isDefault && !d.name.toLowerCase().includes("cable"));
+
+    let alternateDevice: RenderDevice | null = null;
+    if (defaultDevice) {
+        const listenReady = hasCableAlternate && !hasRealAlternate ? await isCableListenConfigured() : false;
+        alternateDevice = pickAlternateDevice(devices, listenReady);
+    }
 
     if (!defaultDevice || !alternateDevice) {
+        if (defaultDevice && hasCableAlternate && !hasRealAlternate) {
+            throw new Error(
+                "The only alternate output device found is VB-Audio Virtual Cable, but \"Listen to this device\" " +
+                "isn't configured yet - moving this app there now would silently mute it for you. Configure " +
+                "Listen for the cable first (see below), then try again."
+            );
+        }
         throw new Error(
             "Only one playback device was found. Windows has no built-in virtual audio device, so there's " +
             "nowhere to move this app's sound while still letting you hear it. Install a free virtual audio " +
@@ -379,11 +447,22 @@ export async function installVirtualCable(): Promise<void> {
     const files = unzipSync(zipBytes);
 
     for (const [name, data] of Object.entries(files)) {
-        await writeFile(join(stageDir, name), data);
+        // See the identical comment in ensureSvcl(): VB-Cable's driver pack
+        // ships its setup exe alongside nested driver subfolders (e.g.
+        // "x64/", "x32/"), and writeFile() won't create missing parent
+        // directories, so this must create them first or extraction throws
+        // ENOENT instead of ever reaching the "setup exe not found" check.
+        if (name.endsWith("/")) continue;
+        const dest = safeExtractPath(stageDir, name);
+        await mkdir(dirname(dest), { recursive: true });
+        await writeFile(dest, data);
     }
 
-    const setupName = Object.keys(files).find(n => /^VBCABLE_Setup_x64\.exe$/i.test(n))
-        ?? Object.keys(files).find(n => /^VBCABLE_Setup\.exe$/i.test(n));
+    // basename() so a setup exe nested under a subfolder (e.g.
+    // "VBCABLE_Driver_Pack/VBCABLE_Setup_x64.exe") is still found by name -
+    // Object.keys(files).find() below only matched top-level entries before.
+    const setupName = Object.keys(files).find(n => /^VBCABLE_Setup_x64\.exe$/i.test(basename(n)))
+        ?? Object.keys(files).find(n => /^VBCABLE_Setup\.exe$/i.test(basename(n)));
     if (!setupName) throw new Error("Could not find the VB-Cable setup executable in the downloaded archive.");
 
     const setupPath = join(stageDir, setupName);
@@ -397,41 +476,86 @@ export async function installVirtualCable(): Promise<void> {
     });
 }
 
-// The "Listen to this device" feature's endpoint property GUID - a publicly
-// documented/reverse-engineered constant used by many audio automation
-// tools, not something we guessed. Property `,0` is the DWORD on/off flag;
-// `,1` is the string ID of the playback device to listen through.
+// The "Listen to this device" feature's endpoint property GUID, seen in the
+// wild on several audio automation tools/forum threads next to properties
+// named ",0"/",1" on a capture endpoint's Properties key.
+//
+// IMPORTANT - verified against a real, live machine's registry during review
+// and found NOT to match the "DWORD flag + REG_SZ device id" shape this code
+// used to assume:
+//   - On a real Capture endpoint's Properties key, there is no ",0" value at
+//     all; ",1" and ",2" both exist and are REG_BINARY (a short PROPVARIANT-
+//     shaped blob: 11 00 00 00 01 00 00 00 00 00 00 00 - VT_BOOL-ish, not a
+//     device id string).
+//   - A REG_SZ endpoint-id-shaped string under this same GUID was instead
+//     found at ",0" on a *Render* endpoint's Properties key, i.e. on the
+//     opposite endpoint direction from the one this code writes to.
+// In short: the exact registry shape of "Listen to this device" is
+// undocumented, differs from the scheme previously assumed here, and blindly
+// writing REG_DWORD/REG_SZ values under fabricated indices risks corrupting
+// unrelated property slots on a live audio endpoint. Rather than guess a new
+// binary layout without authoritative confirmation, this feature now
+// refuses to write and reports itself as unavailable - safer than silently
+// "succeeding" at nothing (or at something harmful).
+//
+// SECOND-ROUND FINDING: the ",1" REG_BINARY read this code briefly used as a
+// "Listen is on" signal is ALSO not trustworthy. Live inspection of every
+// MMDevices Render/Capture endpoint on a real machine found the exact same
+// blob (REG_BINARY 0B0000000100000000000000) at ",1" on *every* endpoint
+// that has this GUID at all - both Render and Capture, including a USB
+// microphone with no plausible manual "Listen" configuration - while ",0"
+// on Render endpoints instead holds a cross-referenced endpoint-id string
+// (paired GUIDs pointing at each other). That pattern is much more
+// consistent with ",1" recording a fixed capability/pairing flag than a
+// per-endpoint boolean toggle state, so treating "REG_BINARY 0B0000000100
+// is present at ,1" as proof Listen is enabled produces false positives on
+// completely unconfigured endpoints. There is no known-good read path
+// either, so isCableListenConfigured() below no longer reads or writes
+// under this GUID at all - the constant is kept purely so this comment
+// stays attached to the right symbol for future readers.
 const LISTEN_PROPERTY_GUID = "{24dbb0fc-9311-4b3d-9cf0-18ff155639d4}";
-
-function toRegPath(registryKey: string): string {
-    return registryKey.replace(/^HKEY_LOCAL_MACHINE\\/i, "HKLM\\") + "\\Properties";
-}
 
 /**
  * True if VB-Cable's "CABLE Output" already has "Listen to this device"
  * turned on. Reading HKLM's MMDevices subtree doesn't need elevation.
+ *
+ * See the long comment above LISTEN_PROPERTY_GUID: neither the original
+ * ",0" REG_DWORD assumption nor the later ",1" REG_BINARY-prefix check
+ * survived live verification against a real registry - the ",1" blob turned
+ * out to be present (with the identical bytes) on every endpoint that has
+ * this property GUID at all, whether or not Listen is plausibly configured,
+ * so it cannot distinguish "on" from "off". There is currently no known-good
+ * way to read this state from the registry, so this always reports `false`
+ * (matching enableCableListen()'s refusal to write) rather than risk a false
+ * "Listen configured" that would hide the manual setup instructions from a
+ * user who actually still needs them. Callers must not treat a `false` here
+ * as proof the feature is off - only as "we can't confirm it via the
+ * registry", per the UI copy in WindowsListenStatus.
  */
 export async function isCableListenConfigured(): Promise<boolean> {
     const rows = await getRows();
     const cableKey = findCableCaptureRegistryKey(rows);
     if (!cableKey) return false;
 
-    try {
-        const { stdout } = await execFileAsync("reg", [
-            "query", toRegPath(cableKey), "/v", `${LISTEN_PROPERTY_GUID},0`
-        ]);
-        return /0x1\b/.test(stdout);
-    } catch {
-        return false;
-    }
+    // Intentionally not reading LISTEN_PROPERTY_GUID here - see the comment
+    // above it for why that value cannot reliably distinguish Listen on/off.
+    return false;
 }
 
 /**
- * Turns on "Listen to this device" for VB-Cable's recording endpoint,
+ * Would turn on "Listen to this device" for VB-Cable's recording endpoint,
  * pointed at the current default playback device (your real headphones/
- * speakers) - this is what lets you keep hearing an app once it's been
- * moved onto the cable. Writing under HKLM needs elevation, so this opens
- * one more (unavoidable) UAC prompt, same as the driver install itself.
+ * speakers) - this is what would let you keep hearing an app once it's been
+ * moved onto the cable.
+ *
+ * Disabled by design: see the long comment above LISTEN_PROPERTY_GUID. Live
+ * registry inspection during review showed this code's assumed property
+ * shape (REG_DWORD flag at ",0" + REG_SZ device id at ",1") does not match
+ * what's actually on a real Capture endpoint, and no authoritative public
+ * documentation of the real shape could be found. Writing fabricated values
+ * under HKLM to a live audio endpoint on a guess is worse than doing
+ * nothing, so this now throws and directs the user to the manual Sound
+ * Control Panel toggle instead of attempting an unverified registry write.
  */
 export async function enableCableListen(): Promise<void> {
     const rows = await getRows();
@@ -448,14 +572,13 @@ export async function enableCableListen(): Promise<void> {
     const target = devices.find(d => d.isDefault && !d.name.toLowerCase().includes("cable"));
     if (!target) throw new Error("Could not determine your real default playback device.");
 
-    const regPath = toRegPath(cableKey);
-    const script =
-        `reg add "${regPath}" /v "${LISTEN_PROPERTY_GUID},0" /t REG_DWORD /d 1 /f ; ` +
-        `reg add "${regPath}" /v "${LISTEN_PROPERTY_GUID},1" /t REG_SZ /d "${target.itemId}" /f`;
-
-    await runElevatedPowerShell(script, 60 * 1000).catch((e: any) => {
-        throw new Error(`Could not configure audio Listen: ${e?.message ?? e}`);
-    });
+    throw new Error(
+        "Automatic \"Listen to this device\" setup isn't available - its registry format couldn't be reliably " +
+        "verified, and writing unverified values to a live audio device's registry key is riskier than leaving " +
+        "it alone. Please enable it manually instead: right-click the speaker icon in the taskbar > Sounds > " +
+        "Recording tab > CABLE Output > Properties > Listen tab > check \"Listen to this device\" > pick " +
+        `"${target.name}" as the playback device.`
+    );
 }
 
 export async function isSupported(): Promise<boolean> {
