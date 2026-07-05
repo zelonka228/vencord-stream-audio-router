@@ -57,7 +57,32 @@ export interface RenderDevice {
     /** The raw MMDevice endpoint id (svcl's "Item ID"), needed to point the "Listen" feature at this device. */
     itemId: string;
     name: string;
+    /**
+     * The parent sound card/driver name (svcl's "Device Name" column, e.g.
+     * "High Definition Audio Device" or, for VB-Cable, exactly
+     * "VB-Audio Virtual Cable"). Used by isCableDevice() instead of fuzzy-
+     * matching "cable" against the user-facing endpoint `name`, since a real
+     * device can legitimately have "cable" as a substring of its name (e.g.
+     * "Cablevision Audio Device", "USB-C Cable Adapter") without being
+     * VB-Audio Virtual Cable at all.
+     */
+    deviceName: string;
     isDefault: boolean;
+}
+
+/**
+ * True if a device is VB-Audio Virtual Cable, checked against the specific
+ * driver/product name svcl.exe reports (its "Device Name" column) rather
+ * than substring-matching "cable" against the endpoint's user-facing name.
+ * The endpoint name alone is not a safe signal: real hardware can contain
+ * "cable" as a substring (e.g. "Cablevision Audio Device", "USB-C Cable
+ * Adapter Audio") without being VB-Cable, and the old `name.includes("cable")`
+ * check would misclassify such a device as the virtual cable - blocking a
+ * perfectly usable, audible alternate output device in pickAlternateDevice()
+ * and reporting a false "only VB-Cable found" state elsewhere. Pure function.
+ */
+export function isCableDevice(device: Pick<RenderDevice, "deviceName">): boolean {
+    return device.deviceName.trim().toLowerCase() === "vb-audio virtual cable";
 }
 
 /**
@@ -234,8 +259,11 @@ export function extractRenderDevices(rows: SvclRow[]): RenderDevice[] {
             itemId: row.itemId,
             // row.name is the specific endpoint (e.g. "Headphones"); row.deviceName
             // is the parent sound card/driver (e.g. "High Definition Audio Device") -
-            // multiple endpoints can share the same deviceName, so it's not unique enough.
+            // multiple endpoints can share the same deviceName, so it's not unique enough
+            // to use as the display name, but it IS the reliable signal for
+            // isCableDevice() (see RenderDevice.deviceName doc comment).
             name: row.name || row.deviceName,
+            deviceName: row.deviceName,
             isDefault: row.isDefault
         }));
 }
@@ -250,6 +278,7 @@ export function findCableCaptureRegistryKey(rows: SvclRow[]): string | null {
     const row = rows.find(r =>
         r.type === "Device" &&
         r.direction === "Capture" &&
+        r.deviceName.trim().toLowerCase() === "vb-audio virtual cable" &&
         r.name.toLowerCase().includes("cable output") &&
         r.registryKey
     );
@@ -354,10 +383,10 @@ const excludedApps = new Map<string, string>();
  */
 export function pickAlternateDevice(devices: RenderDevice[], listenReady: boolean): RenderDevice | null {
     const nonDefaultDevices = devices.filter(d => !d.isDefault);
-    const realAlternate = nonDefaultDevices.find(d => !d.name.toLowerCase().includes("cable"));
+    const realAlternate = nonDefaultDevices.find(d => !isCableDevice(d));
     if (realAlternate) return realAlternate;
 
-    const cableAlternate = nonDefaultDevices.find(d => d.name.toLowerCase().includes("cable"));
+    const cableAlternate = nonDefaultDevices.find(d => isCableDevice(d));
     if (cableAlternate && listenReady) return cableAlternate;
 
     return null;
@@ -384,8 +413,8 @@ export async function excludeAppAudio(processId: string): Promise<void> {
     const devices = extractRenderDevices(rows);
 
     const defaultDevice = devices.find(d => d.isDefault);
-    const hasCableAlternate = devices.some(d => !d.isDefault && d.name.toLowerCase().includes("cable"));
-    const hasRealAlternate = devices.some(d => !d.isDefault && !d.name.toLowerCase().includes("cable"));
+    const hasCableAlternate = devices.some(d => !d.isDefault && isCableDevice(d));
+    const hasRealAlternate = devices.some(d => !d.isDefault && !isCableDevice(d));
 
     let alternateDevice: RenderDevice | null = null;
     if (defaultDevice) {
@@ -454,7 +483,7 @@ const VB_CABLE_URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Drive
 export async function hasSecondPlaybackDevice(): Promise<boolean> {
     const rows = await getRows();
     const devices = extractRenderDevices(rows);
-    return devices.some(d => !d.isDefault && !d.name.toLowerCase().includes("cable"));
+    return devices.some(d => !d.isDefault && !isCableDevice(d));
 }
 
 /**
@@ -465,7 +494,7 @@ export async function hasSecondPlaybackDevice(): Promise<boolean> {
 export async function isVirtualCableInstalled(): Promise<boolean> {
     const rows = await getRows();
     const devices = extractRenderDevices(rows);
-    return devices.some(d => d.name.toLowerCase().includes("cable"));
+    return devices.some(d => isCableDevice(d));
 }
 
 /**
@@ -628,7 +657,7 @@ export async function enableCableListen(): Promise<void> {
     }
 
     const devices = extractRenderDevices(rows);
-    const target = devices.find(d => d.isDefault && !d.name.toLowerCase().includes("cable"));
+    const target = devices.find(d => d.isDefault && !isCableDevice(d));
     if (!target) throw new Error("Could not determine your real default playback device.");
 
     throw new Error(

@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 
-import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, parseCsvLine, parseSvclCsv, pickAlternateDevice, type RenderDevice, safeExtractPath } from "../platform/windows.ts";
+import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, isCableDevice, parseCsvLine, parseSvclCsv, pickAlternateDevice, type RenderDevice, safeExtractPath } from "../platform/windows.ts";
 
 let passed = 0;
 let failed = 0;
@@ -206,24 +206,46 @@ test("does not match a Render-direction device that happens to have 'cable' in i
     assert.equal(findCableCaptureRegistryKey(parseSvclCsv(raw)), null);
 });
 
+test("does not match a real Capture device whose name coincidentally contains 'cable output' but isn't VB-Cable", () => {
+    // Regression found in this round: findCableCaptureRegistryKey() used to
+    // match purely on the endpoint name containing "cable output", without
+    // checking svcl's "Device Name" (driver/product) column. A real capture
+    // device from an unrelated vendor that happened to name its endpoint
+    // "Cable Output" (or similar) would be misidentified as VB-Audio Virtual
+    // Cable's recording endpoint, and its registry key would get treated as
+    // the cable's - risking the (currently-disabled) Listen automation
+    // targeting the wrong device's registry key if it's ever re-enabled.
+    const raw = [
+        SAMPLE_CSV.split("\r\n")[0],
+        "Cable Output,Device,Capture,Some Unrelated Vendor,,,,Active,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{x}.{y},Some Unrelated Vendor\\Device\\Cable Output\\Capture,,,,HKEY_LOCAL_MACHINE\\Should\\Not\\Match,,"
+    ].join("\r\n");
+    assert.equal(findCableCaptureRegistryKey(parseSvclCsv(raw)), null);
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("pickAlternateDevice");
 
-function device(name: string, isDefault: boolean): RenderDevice {
-    return { id: name, itemId: name, name, isDefault };
+function device(name: string, isDefault: boolean, deviceName: string = name): RenderDevice {
+    return { id: name, itemId: name, name, deviceName, isDefault };
+}
+
+// A real VB-Cable endpoint always carries "VB-Audio Virtual Cable" in svcl's
+// "Device Name" column, regardless of what the endpoint itself is named.
+function cableDevice(name: string, isDefault: boolean): RenderDevice {
+    return device(name, isDefault, "VB-Audio Virtual Cable");
 }
 
 test("prefers a real non-default device over the cable, regardless of array order", () => {
     // Cable listed first - a naive `.find(d => !d.isDefault)` would pick it
     // and silently mute the excluded app if Listen isn't configured.
-    const devices = [device("Speakers", true), device("CABLE Input", false), device("Headphones", false)];
+    const devices = [device("Speakers", true), cableDevice("CABLE Input", false), device("Headphones", false)];
     const picked = pickAlternateDevice(devices, false);
     assert.equal(picked?.name, "Headphones");
 });
 
 test("falls back to the cable only when Listen is already configured", () => {
-    const devices = [device("Speakers", true), device("CABLE Input", false)];
+    const devices = [device("Speakers", true), cableDevice("CABLE Input", false)];
     assert.equal(pickAlternateDevice(devices, false), null);
     assert.equal(pickAlternateDevice(devices, true)?.name, "CABLE Input");
 });
@@ -247,12 +269,39 @@ test("a cable-only alternate is not usable while Listen is unconfirmed (matches 
     // exclude cable-named devices from its count; this test locks in that a
     // cable-only device list is *not* usable as a real alternate under the
     // same listenReady=false gating excludeAppAudio() uses.
-    const devices = [device("Speakers", true), device("CABLE Input", false)];
+    const devices = [device("Speakers", true), cableDevice("CABLE Input", false)];
     assert.equal(pickAlternateDevice(devices, false), null);
     // The would-be "second device" is cable-only, so a hasSecondPlaybackDevice-
     // style check must also treat it as absent, not present.
-    const looksLikeSecondRealDevice = devices.some(d => !d.isDefault && !d.name.toLowerCase().includes("cable"));
+    const looksLikeSecondRealDevice = devices.some(d => !d.isDefault && !isCableDevice(d));
     assert.equal(looksLikeSecondRealDevice, false);
+});
+
+test("a real device whose endpoint name merely contains 'cable' as a substring is not misclassified as VB-Cable", () => {
+    // Regression found in this round: pickAlternateDevice() (and several
+    // sibling functions) used to decide "is this VB-Cable?" via
+    // `name.toLowerCase().includes("cable")` against the user-facing endpoint
+    // name. That misclassifies any real hardware whose name happens to
+    // contain "cable" as a substring - e.g. "Cablevision Audio Device" or a
+    // "USB-C Cable Adapter" - as VB-Audio Virtual Cable, even though its
+    // svcl "Device Name" (driver/product name) is nothing of the sort. Such a
+    // device would then be treated as unusable until "Listen to this device"
+    // is confirmed (which isCableListenConfigured() never reports as true),
+    // so pickAlternateDevice() would return null and excludeAppAudio() would
+    // throw a confusing "only VB-Cable found" error even though a real,
+    // audible alternate device was available. Fixed by matching on the
+    // specific `deviceName` field ("VB-Audio Virtual Cable") via
+    // isCableDevice() instead of substring-matching the display name.
+    const devices = [device("Speakers", true), device("Cablevision Audio Device", false, "Some Random Vendor")];
+    const picked = pickAlternateDevice(devices, false);
+    assert.equal(picked?.name, "Cablevision Audio Device");
+});
+
+test("isCableDevice() matches only the real VB-Audio Virtual Cable device name, not a substring of the endpoint name", () => {
+    assert.equal(isCableDevice({ deviceName: "VB-Audio Virtual Cable" }), true);
+    assert.equal(isCableDevice({ deviceName: "vb-audio virtual cable" }), true);
+    assert.equal(isCableDevice({ deviceName: "Some Random Vendor" }), false);
+    assert.equal(isCableDevice({ deviceName: "" }), false);
 });
 
 // ---------------------------------------------------------------------------

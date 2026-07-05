@@ -31,6 +31,54 @@ export interface AudioApp {
 export const EXCLUDED_SINK_NAME = "VencordExcludedAudio";
 
 /**
+ * Splits `raw` into blocks at every line that starts with `headerPrefix`
+ * (e.g. "Sink Input #", "Sink #", "Module #"), the same way pactl's verbose
+ * listings separate entries. Unlike a naive `split(/\n(?=prefix)/)`, this is
+ * quote-aware: a candidate header line that falls *inside* an still-open
+ * double-quoted property value is NOT treated as a real boundary.
+ *
+ * This matters because property values (application.name, media.name, a
+ * Bluetooth device's advertised description, etc.) can be fully attacker/
+ * app-controlled and pactl does not escape embedded literal newlines inside
+ * them - only embedded quotes/backslashes are escaped. Without this guard, a
+ * media.name like `Evil\nSink Input #999\n...` would inject a second,
+ * entirely fabricated block into the listing, complete with an attacker-
+ * chosen id - which the UI would then show and let the user "exclude", and
+ * which could collide with a real entry's id.
+ */
+function splitBlocksQuoteAware(raw: string, headerPrefix: string): string[] {
+    const lineHeaderRe = new RegExp(`^${escapeRegExp(headerPrefix)}`, "gm");
+    const candidates: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = lineHeaderRe.exec(raw))) candidates.push(m.index);
+
+    const insideQuoteAt = new Array<boolean>(candidates.length).fill(false);
+    let inQuote = false;
+    let candIdx = 0;
+    for (let i = 0; i < raw.length; i++) {
+        while (candIdx < candidates.length && candidates[candIdx] === i) {
+            insideQuoteAt[candIdx] = inQuote;
+            candIdx++;
+        }
+        const c = raw[i];
+        if (c === "\\" && inQuote) { i++; continue; }
+        if (c === "\"") inQuote = !inQuote;
+    }
+
+    const boundaries = candidates.filter((_, k) => !insideQuoteAt[k]);
+    if (boundaries.length === 0 || boundaries[0] !== 0) boundaries.unshift(0);
+
+    const blocks: string[] = [];
+    for (let k = 0; k < boundaries.length; k++) {
+        const start = boundaries[k];
+        const end = k + 1 < boundaries.length ? boundaries[k + 1] : raw.length;
+        if (start === end) continue;
+        blocks.push(raw.slice(start, end));
+    }
+    return blocks;
+}
+
+/**
  * Parses the (verbose) output of `pactl list sink-inputs` into a flat list
  * of {id, name}. Pure function - no side effects - so it can be unit tested
  * without a real PulseAudio server.
@@ -38,7 +86,7 @@ export const EXCLUDED_SINK_NAME = "VencordExcludedAudio";
 export function parseSinkInputs(raw: string): AudioApp[] {
     if (!raw || !raw.trim()) return [];
 
-    const blocks = raw.split(/\r?\n(?=Sink Input #)/g).filter(b => b.trim().startsWith("Sink Input #"));
+    const blocks = splitBlocksQuoteAware(raw, "Sink Input #").filter(b => b.trim().startsWith("Sink Input #"));
     const apps: AudioApp[] = [];
 
     for (const block of blocks) {
@@ -48,12 +96,36 @@ export function parseSinkInputs(raw: string): AudioApp[] {
         // pactl escapes embedded quotes/backslashes in property values as \" / \\,
         // so a plain [^"]* class would stop at the first escaped quote and
         // truncate names like `He said \"Hi\"`. Match escaped-or-non-quote runs,
-        // then unescape.
-        const nameMatch =
-            block.match(/application\.name\s*=\s*"((?:[^"\\]|\\.)*)"/) ??
-            block.match(/media\.name\s*=\s*"((?:[^"\\]|\\.)*)"/);
+        // then unescape. The character class explicitly excludes \r/\n: pactl
+        // does NOT escape embedded literal newlines in property values (only
+        // " and \ are escaped), so a name containing a real newline must not
+        // let [^"\\] silently span past it into whatever comes after -
+        // including a fabricated "Sink Input #<n>" block injected via that
+        // same newline.
+        //
+        // Only the FIRST application.name/media.name line in the block may
+        // ever be considered - matchNameOnFirstOccurrence below fails
+        // outright (rather than letting a plain, non-anchored .match() skip
+        // ahead) if that first occurrence doesn't cleanly close its quote on
+        // the same line. Otherwise a malformed/hostile first value could
+        // cause the overall match to silently fall through to a LATER
+        // occurrence of the same property key elsewhere in the block (e.g.
+        // inside injected fake content that got merged into this block
+        // because its own quote never validly closed), attributing that
+        // later value's text to this entry instead.
+        const nameMatch = matchNameOnFirstOccurrence(block, "application.name") ??
+            matchNameOnFirstOccurrence(block, "media.name");
 
-        const name = nameMatch?.[1]?.replace(/\\(.)/g, "$1").trim();
+        // Strip control characters (including any embedded literal newline)
+        // before display. A legitimate application/media name is a single
+        // line of text; pactl does not escape control characters inside
+        // property values, so without this an app could plant raw \n/\r (or
+        // other control bytes) in its self-reported name and have it render
+        // as if it were multiple lines / structured pactl output in the UI.
+        const name = nameMatch?.[1]
+            ?.replace(/\\(.)/g, "$1")
+            .replace(/[\x00-\x1f\x7f]+/g, " ")
+            .trim();
 
         apps.push({
             id: idMatch[1],
@@ -75,6 +147,29 @@ export function shortSinksContainsName(raw: string, sinkName: string): boolean {
 }
 
 /**
+ * Parses `pactl list short sinks` (tab-separated: index, name, module, format,
+ * state) and returns the owner module id for the sink with exactly the given
+ * name, or null if no such sink exists. Pure function.
+ *
+ * This is the injection-safe alternative to parsing verbose `pactl list
+ * sinks` output for the same lookup (see findOwnerModuleOfSink's doc comment
+ * for why that's NOT safe): the short-list format's name and module-id
+ * columns come from pactl's own restricted, non-free-text sink-name/id
+ * generation (safe identifier characters only, no attacker/hardware-supplied
+ * text - unlike `Description:`, which mirrors things like a Bluetooth
+ * device's self-advertised name and is printed completely unescaped). There
+ * is no field here an attacker can stuff a fake extra row into.
+ */
+export function findOwnerModuleIdOfShortSink(raw: string, sinkName: string): string | null {
+    if (!raw) return null;
+    for (const line of raw.split(/\r?\n/)) {
+        const cols = line.split("\t");
+        if (cols[1] === sinkName) return cols[2] ?? null;
+    }
+    return null;
+}
+
+/**
  * Parses `pactl list sinks` (verbose) output and returns the module id that
  * owns the sink with the given name, or null if no such sink exists.
  * Pure function.
@@ -82,7 +177,32 @@ export function shortSinksContainsName(raw: string, sinkName: string): boolean {
 export function findOwnerModuleOfSink(raw: string, sinkName: string): string | null {
     if (!raw) return null;
 
+    // `Description:`, `device.description`, and similar free-text fields
+    // pactl prints unquoted (unlike application.name/media.name, they get no
+    // escaping at all - not even of embedded literal newlines) can come from
+    // attacker-influenced sources, e.g. an advertised Bluetooth device name.
+    // Such a value could smuggle in a fabricated "Sink #<n>\nName:
+    // <sinkName>\nOwner Module: <attacker-chosen id>" block that never
+    // really existed.
+    //
+    // Requiring "Sink #" to be preceded by a blank line (real pactl always
+    // separates genuine top-level entries that way) is a useful heuristic
+    // but NOT sufficient on its own: the attacker fully controls the
+    // injected text, including any blank line(s) they choose to put before
+    // their fake header, so "\n\nSink #999\n..." embedded in a description
+    // bypasses that check just as easily.
+    //
+    // The invariant that actually can't be spoofed away: the server enforces
+    // unique sink names, so a legitimate listing can never contain two real
+    // "Sink #" blocks both claiming the same Name. If more than one block -
+    // real or fabricated - claims the target name, the input is inherently
+    // inconsistent, and blindly trusting whichever one matches first (which
+    // the attacker can arrange to be their fake block) is exactly the
+    // confusion they're going for. Refuse and return null in that case, so
+    // restoreAudio() simply skips unloading anything rather than unloading
+    // an attacker-chosen module id.
     const blocks = raw.split(/\r?\n(?=Sink #)/g);
+    const matches: string[] = [];
     for (const block of blocks) {
         // Anchored to the start of the line (modulo leading indentation) so a
         // *different* field - e.g. `Description:` - can never false-match just
@@ -91,10 +211,11 @@ export function findOwnerModuleOfSink(raw: string, sinkName: string): string | n
         if (!new RegExp(`^[^\\S\\r\\n]*Name:\\s*${escapeRegExp(sinkName)}\\s*$`, "m").test(block)) continue;
 
         const ownerMatch = block.match(/Owner Module:\s*(\d+)/);
-        return ownerMatch ? ownerMatch[1] : null;
+        if (ownerMatch) matches.push(ownerMatch[1]);
     }
 
-    return null;
+    if (matches.length > 1) return null;
+    return matches[0] ?? null;
 }
 
 /**
@@ -130,6 +251,27 @@ export function findModuleIdsByArgument(raw: string, needle: string): string[] {
 
 function escapeRegExp(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Finds the FIRST line in `block` that looks like `key = "..."` and returns
+ * a match array whose group 1 is the raw (still-escaped) quoted value - but
+ * only if that first occurrence's quote actually closes on the same line.
+ * If the first occurrence's quote never closes before the line ends, this
+ * returns null outright instead of letting a plain non-anchored regex search
+ * skip ahead and match a later, unrelated occurrence of the same key further
+ * down in the block (which could be attacker-injected content that only
+ * "exists" in this block because the first occurrence's own quote never
+ * validly closed).
+ */
+function matchNameOnFirstOccurrence(block: string, key: string): RegExpMatchArray | null {
+    const keyRe = new RegExp(`^[^\\S\\r\\n]*${escapeRegExp(key)}\\s*=\\s*"`, "m");
+    const keyMatch = keyRe.exec(block);
+    if (!keyMatch) return null;
+
+    const rest = block.slice(keyMatch.index + keyMatch[0].length);
+    const valueMatch = rest.match(/^((?:[^"\\\r\n]|\\.)*)"/);
+    return valueMatch;
 }
 
 /** Restricts ids coming from the renderer to digits only before they ever touch execFile args. */
@@ -263,8 +405,17 @@ export async function restoreAudio(): Promise<void> {
         await pactl(["unload-module", id]).catch(() => { });
     }
 
-    const sinksRaw = await pactl(["list", "sinks"]).catch(() => "");
-    const excludedSinkModuleId = findOwnerModuleOfSink(sinksRaw, EXCLUDED_SINK_NAME);
+    // Uses the short-list format (not the verbose `list sinks` parsed by
+    // findOwnerModuleOfSink) specifically because it's injection-safe - see
+    // findOwnerModuleIdOfShortSink's doc comment. That matters here: this is
+    // the actual live cleanup path, and unlike a defensive "refuse if
+    // ambiguous" fallback, looking the id up from a format that can't be
+    // spoofed in the first place means a stray/hostile Bluetooth device
+    // description (or similar free-text field) sitting in the same `pactl
+    // list sinks` output can never prevent restoreAudio() from finding and
+    // unloading our own sink's real module.
+    const shortSinksRaw = await pactl(["list", "short", "sinks"]).catch(() => "");
+    const excludedSinkModuleId = findOwnerModuleIdOfShortSink(shortSinksRaw, EXCLUDED_SINK_NAME);
     if (excludedSinkModuleId) {
         await pactl(["unload-module", excludedSinkModuleId]).catch(() => { });
     }

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 
 import {
     findModuleIdsByArgument,
+    findOwnerModuleIdOfShortSink,
     findOwnerModuleOfSink,
     parseSinkInputs,
     shortSinksContainsName
@@ -145,6 +146,62 @@ test("ignores unrelated leading noise before the first block", () => {
     assert.equal(result[0].id, "10");
 });
 
+test("handles emoji and RTL text in application names", () => {
+    const raw = `
+Sink Input #1
+	Properties:
+		application.name = "Firefox 🔥🎮"
+
+Sink Input #2
+	Properties:
+		application.name = "لعبة"
+`.trim();
+
+    const result = parseSinkInputs(raw);
+    assert.equal(result[0].name, "Firefox 🔥🎮");
+    assert.equal(result[1].name, "لعبة");
+});
+
+test("an app cannot inject a fabricated extra Sink Input block via an embedded literal newline in its name", () => {
+    // Regression: pactl does not escape embedded literal newlines inside
+    // quoted property values (it only escapes embedded quotes/backslashes).
+    // A malicious/buggy app can set its own application.name / media.name
+    // property (fully self-reported, e.g. via libpulse's pa_proplist) to a
+    // string containing a real "\n" followed by text that looks exactly
+    // like a whole new "Sink Input #<n>" block - including an attacker-
+    // chosen id. The naive line-based block splitter used to treat that
+    // embedded text as a genuine second block, producing a fabricated
+    // AudioApp entry with a DIFFERENT id than the real sink input it came
+    // from. Worst case: the fabricated id collides with a real sink input's
+    // id elsewhere in the same listing, so two entries share one id and the
+    // user can no longer trust which entry's label corresponds to which
+    // underlying stream - "Exclude" could then silently act on the wrong
+    // app. The quote-aware splitter must keep the injected text as part of
+    // its OWN block (id 3) and must not spawn a second entry for id 42 that
+    // shadows/duplicates the real one.
+    const raw = `
+Sink Input #3
+	Properties:
+		application.name = "Evil
+Sink Input #42
+	Properties:
+		application.name = "Injected""
+
+Sink Input #42
+	Properties:
+		application.name = "RealApp"
+`.trim();
+
+    const result = parseSinkInputs(raw);
+    assert.equal(result.length, 2);
+    assert.deepEqual(result.map(a => a.id), ["3", "42"]);
+    // The id "42" entry must be the REAL one, not the injected impostor -
+    // and no entry may contain a raw embedded newline (control characters
+    // are stripped from displayed names as defense in depth).
+    assert.equal(result[1].name, "RealApp");
+    assert.ok(!result[0].name.includes("\n"));
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("findOwnerModuleOfSink");
@@ -207,6 +264,61 @@ Sink #2
 `.trim();
 
     assert.equal(findOwnerModuleOfSink(raw, "VencordStreamMix"), "55");
+});
+
+test("refuses to pick a module id when a sink name is ambiguous (multiple blocks claim it), even across a blank-line boundary", () => {
+    // Regression: unlike application.name/media.name, bare fields such as
+    // Description: are printed by pactl completely unescaped - not even
+    // embedded literal newlines are escaped. Something that feeds into a
+    // sink's description (e.g. a Bluetooth device's self-advertised name)
+    // is attacker-influenced (or just weird/malformed, no attacker needed).
+    // A crafted description containing a real "\n" followed by text shaped
+    // like "Sink #<n>\n\tName: <target>\n\tOwner Module: <bogus id>" fabricates
+    // an entire extra "Sink #" block that never really existed on the server.
+    //
+    // A tempting "fix" is to only treat "Sink #" as a real boundary when it's
+    // preceded by a blank line, since genuine pactl output always separates
+    // top-level entries that way. That is NOT sufficient: the attacker fully
+    // controls the injected text, including any blank line(s) they choose to
+    // put before their fake header - "Description: Evil Device\n\nSink
+    // #999\n..." satisfies the blank-line heuristic just as well as a real
+    // boundary would, so that check alone can be bypassed trivially.
+    //
+    // The invariant that can't be spoofed away: the server enforces unique
+    // sink names, so a legitimate listing can never contain two real "Sink #"
+    // blocks both claiming the same Name. Whenever more than one block does
+    // (whether or not a blank line precedes the suspicious one), the input is
+    // inherently inconsistent and must not be trusted - refuse (return null)
+    // rather than guess, so restoreAudio() simply skips unloading anything
+    // instead of risking unloading an attacker-chosen module id.
+    const withAttackerSuppliedBlankLine = `
+Sink #1
+	Name: bluez_output.AA_BB
+	Description: Evil Device
+
+Sink #999
+	Name: VencordExcludedAudio
+	Owner Module: 31337
+
+Sink #2
+	Name: VencordExcludedAudio
+	Owner Module: 6
+`.trim();
+    assert.equal(findOwnerModuleOfSink(withAttackerSuppliedBlankLine, "VencordExcludedAudio"), null);
+
+    const withoutBlankLine = `
+Sink #1
+	Name: bluez_output.AA_BB
+	Description: Evil Device
+Sink #999
+	Name: VencordExcludedAudio
+	Owner Module: 31337
+
+Sink #2
+	Name: VencordExcludedAudio
+	Owner Module: 6
+`.trim();
+    assert.equal(findOwnerModuleOfSink(withoutBlankLine, "VencordExcludedAudio"), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -389,6 +501,40 @@ test("does not match a name that only contains the target as a substring", () =>
 
 test("returns false for empty input", () => {
     assert.equal(shortSinksContainsName("", "VencordStreamMix"), false);
+});
+
+// ---------------------------------------------------------------------------
+
+console.log("findOwnerModuleIdOfShortSink");
+
+test("finds the owning module id for a matching sink name in short-list format", () => {
+    const raw = "1\tVencordExcludedAudio\t42\tfloat32le 2ch 48000Hz\tRUNNING\n2\talsa_output.pci\t3\tfloat32le 2ch 48000Hz\tIDLE";
+    assert.equal(findOwnerModuleIdOfShortSink(raw, "VencordExcludedAudio"), "42");
+});
+
+test("returns null when the sink name does not exist in short-list format", () => {
+    const raw = "1\talsa_output.pci\t3\tfloat32le 2ch 48000Hz\tIDLE";
+    assert.equal(findOwnerModuleIdOfShortSink(raw, "VencordExcludedAudio"), null);
+});
+
+test("returns null for empty input", () => {
+    assert.equal(findOwnerModuleIdOfShortSink("", "VencordExcludedAudio"), null);
+});
+
+test("cannot be fooled by a fabricated 'Description'-style injection, unlike the verbose-format lookup", () => {
+    // restoreAudio() switched from findOwnerModuleOfSink (parses verbose
+    // `pactl list sinks`, which contains free-text fields like Description:
+    // that pactl prints completely unescaped - including a real embedded
+    // newline, so a Bluetooth device's self-advertised name could smuggle in
+    // text shaped like a fake extra "Sink #" entry) to this function, which
+    // parses `pactl list short sinks` instead. That format has no free-text
+    // column at all: name and module id are both restricted to pactl's own
+    // safe identifier charset, so there is nothing for an attacker/hostile
+    // device to inject a fake row's worth of tab-separated fields into. A
+    // literal tab character can't sneak into the name/module columns the way
+    // a literal newline could sneak into a verbose Description value.
+    const raw = "1\tVencordExcludedAudio\t42\tfloat32le 2ch 48000Hz\tRUNNING";
+    assert.equal(findOwnerModuleIdOfShortSink(raw, "VencordExcludedAudio"), "42");
 });
 
 // ---------------------------------------------------------------------------
