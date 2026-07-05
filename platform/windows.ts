@@ -71,18 +71,35 @@ export interface RenderDevice {
 }
 
 /**
- * True if a device is VB-Audio Virtual Cable, checked against the specific
- * driver/product name svcl.exe reports (its "Device Name" column) rather
- * than substring-matching "cable" against the endpoint's user-facing name.
- * The endpoint name alone is not a safe signal: real hardware can contain
- * "cable" as a substring (e.g. "Cablevision Audio Device", "USB-C Cable
- * Adapter Audio") without being VB-Cable, and the old `name.includes("cable")`
- * check would misclassify such a device as the virtual cable - blocking a
- * perfectly usable, audible alternate output device in pickAlternateDevice()
- * and reporting a false "only VB-Cable found" state elsewhere. Pure function.
+ * True if a device belongs to the VB-Audio virtual-device family, checked
+ * against the specific driver/product name svcl.exe reports (its "Device
+ * Name" column) rather than substring-matching "cable" against the
+ * endpoint's user-facing name. The endpoint name alone is not a safe signal:
+ * real hardware can contain "cable" as a substring (e.g. "Cablevision Audio
+ * Device", "USB-C Cable Adapter Audio") without being VB-Cable, and the old
+ * `name.includes("cable")` check would misclassify such a device as the
+ * virtual cable - blocking a perfectly usable, audible alternate output
+ * device in pickAlternateDevice() and reporting a false "only VB-Cable
+ * found" state elsewhere.
+ *
+ * Matches on the "vb-audio " driver-name prefix rather than the single exact
+ * string "vb-audio virtual cable", because installVirtualCable() is not the
+ * only way one of these devices can end up on a machine: a user may already
+ * have a *different* VB-Audio product installed on their own (e.g. the paid
+ * "VB-Audio Cable A+B" two-cable pack, or the Voicemeeter/Voicemeeter
+ * Banana/Potato mixers, which install their own "VB-Audio Voicemeeter VAIO"-
+ * family virtual render devices). Every product in this family reports a
+ * "Device Name" starting with "VB-Audio " and behaves identically for this
+ * plugin's purposes - a virtual endpoint that is silent unless something is
+ * actively routing/listening to it. Matching only the single-cable product's
+ * exact name would let e.g. a Voicemeeter virtual input be picked as a
+ * "real" alternate device by pickAlternateDevice(), silently muting the
+ * excluded app for the user - exactly the failure mode this file exists to
+ * avoid, just via a different VB-Audio product than the one this plugin
+ * installs. Pure function.
  */
 export function isCableDevice(device: Pick<RenderDevice, "deviceName">): boolean {
-    return device.deviceName.trim().toLowerCase() === "vb-audio virtual cable";
+    return device.deviceName.trim().toLowerCase().startsWith("vb-audio ");
 }
 
 /**
@@ -372,6 +389,36 @@ export async function listAudioApps(): Promise<AudioApp[]> {
 /** Remembers {process -> original device id} for apps we've excluded, so restore can undo precisely. */
 const excludedApps = new Map<string, string>();
 
+// Serializes every excludeAppAudio()/restoreAudio() call through a single
+// chained tail promise, so they can never interleave their svcl.exe calls
+// against the shared `excludedApps` Map.
+//
+// Without this, restoreAudio() (called not just from the settings panel's
+// Restore button, but unconditionally from the plugin's stop() hook so
+// disabling the plugin never leaves audio silently rerouted) could run
+// concurrently with an in-flight excludeAppAudio() for the same process:
+// excludeAppAudio() records the app's original device in `excludedApps`
+// *before* its own `runSvcl(/SetAppDefault, alternateDevice, ...)` call
+// resolves; if restoreAudio() reads that same Map entry in the meantime and
+// fires its own `runSvcl(/SetAppDefault, originalDevice, ...)` for the same
+// process, two svcl.exe invocations race to set the same app's default
+// device and whichever's execFileAsync happens to finish last silently wins
+// - possibly leaving the app rerouted onto the alternate device even though
+// the user just disabled the plugin expecting everything restored. Chaining
+// both functions' bodies onto one tail promise makes each call fully
+// complete (svcl.exe call and Map mutation together) before the next one
+// starts, eliminating the race entirely.
+let operationTail: Promise<void> = Promise.resolve();
+
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const result = operationTail.then(fn, fn);
+    // Swallow rejections in the tail itself (each caller still gets the real
+    // rejection via `result`) so one failed operation doesn't permanently
+    // wedge every later queued operation behind a rejected tail promise.
+    operationTail = result.then(() => { }, () => { });
+    return result;
+}
+
 /**
  * Picks which device to route the excluded app onto: prefers a real
  * (non-cable) non-default device, since svcl.exe's row order isn't
@@ -409,49 +456,66 @@ export async function excludeAppAudio(processId: string): Promise<void> {
     // shell), not restrict to a narrow identifier charset.
     if (!/^[^\\/:*?"<>|]+\.exe$/i.test(processId)) throw new Error(`Invalid process id: ${JSON.stringify(processId)}`);
 
-    const rows = await getRows();
-    const devices = extractRenderDevices(rows);
+    // Serialized against restoreAudio() (and any other concurrent
+    // excludeAppAudio() call) - see the long comment above `serialize()`.
+    return serialize(async () => {
+        const rows = await getRows();
+        const devices = extractRenderDevices(rows);
 
-    const defaultDevice = devices.find(d => d.isDefault);
-    const hasCableAlternate = devices.some(d => !d.isDefault && isCableDevice(d));
-    const hasRealAlternate = devices.some(d => !d.isDefault && !isCableDevice(d));
+        const defaultDevice = devices.find(d => d.isDefault);
+        const hasCableAlternate = devices.some(d => !d.isDefault && isCableDevice(d));
+        const hasRealAlternate = devices.some(d => !d.isDefault && !isCableDevice(d));
 
-    let alternateDevice: RenderDevice | null = null;
-    if (defaultDevice) {
-        // isCableListenConfigured() always returns false by design (see the
-        // comment above it) - calling it here would just spawn another
-        // svcl.exe run for a hardcoded result, so skip straight to false.
-        alternateDevice = pickAlternateDevice(devices, false);
-    }
+        let alternateDevice: RenderDevice | null = null;
+        if (defaultDevice) {
+            // isCableListenConfigured() always returns false by design (see the
+            // comment above it) - calling it here would just spawn another
+            // svcl.exe run for a hardcoded result, so skip straight to false.
+            alternateDevice = pickAlternateDevice(devices, false);
+        }
 
-    if (!defaultDevice || !alternateDevice) {
-        if (defaultDevice && hasCableAlternate && !hasRealAlternate) {
+        if (!defaultDevice || !alternateDevice) {
+            if (defaultDevice && hasCableAlternate && !hasRealAlternate) {
+                throw new Error(
+                    "The only alternate output device found is VB-Audio Virtual Cable, but \"Listen to this device\" " +
+                    "isn't configured yet - moving this app there now would silently mute it for you. Configure " +
+                    "Listen for the cable first (see below), then try again."
+                );
+            }
             throw new Error(
-                "The only alternate output device found is VB-Audio Virtual Cable, but \"Listen to this device\" " +
-                "isn't configured yet - moving this app there now would silently mute it for you. Configure " +
-                "Listen for the cable first (see below), then try again."
+                "Only one playback device was found. Windows has no built-in virtual audio device, so there's " +
+                "nowhere to move this app's sound while still letting you hear it. Install a free virtual audio " +
+                "cable (e.g. VB-Audio Virtual Cable) to get a second destination, or use the settings page below manually."
             );
         }
-        throw new Error(
-            "Only one playback device was found. Windows has no built-in virtual audio device, so there's " +
-            "nowhere to move this app's sound while still letting you hear it. Install a free virtual audio " +
-            "cable (e.g. VB-Audio Virtual Cable) to get a second destination, or use the settings page below manually."
-        );
-    }
 
-    if (!excludedApps.has(processId)) {
-        excludedApps.set(processId, defaultDevice.id);
-    }
+        // Record the original device only after the move to the alternate has
+        // actually succeeded, not before. Recording it first (the previous
+        // order) meant that if runSvcl() below threw, `excludedApps` would
+        // already claim the app had been excluded even though it never left
+        // its original device - a subsequent excludeAppAudio() retry would
+        // then skip re-recording (the `!has()` guard) and could pin a stale
+        // "original device" if the system default changed in between.
+        await runSvcl(["/Stdout", "/SetAppDefault", alternateDevice.id, "all", processId]);
 
-    await runSvcl(["/Stdout", "/SetAppDefault", alternateDevice.id, "all", processId]);
+        if (!excludedApps.has(processId)) {
+            excludedApps.set(processId, defaultDevice.id);
+        }
+    });
 }
 
 /** Moves every currently-excluded app back to the device it was on before. */
 export async function restoreAudio(): Promise<void> {
-    for (const [processId, originalDeviceId] of excludedApps) {
-        await runSvcl(["/Stdout", "/SetAppDefault", originalDeviceId, "all", processId]).catch(() => { });
-    }
-    excludedApps.clear();
+    // Serialized against excludeAppAudio() - see the long comment above
+    // `serialize()`. This guarantees restoreAudio() only ever observes
+    // `excludedApps` states left behind by a *fully completed* exclude (or
+    // restore) call, never one that's still mid-flight.
+    return serialize(async () => {
+        for (const [processId, originalDeviceId] of excludedApps) {
+            await runSvcl(["/Stdout", "/SetAppDefault", originalDeviceId, "all", processId]).catch(() => { });
+        }
+        excludedApps.clear();
+    });
 }
 
 /** Opens Settings > System > Sound > "App volume and device preferences", as a manual fallback. */

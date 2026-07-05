@@ -485,6 +485,78 @@ Module #2
     assert.deepEqual(stale, ["1"]);
 });
 
+test("a module cannot inject a fabricated extra Module block via an embedded literal newline in a free-text property", () => {
+    // Regression (round 3): like sink-inputs' application.name/media.name,
+    // a module's Properties: block can hold free-text values (e.g.
+    // module.description, which for something like a Bluetooth-backed
+    // module can mirror a device's self-advertised name) that pactl escapes
+    // the same way - embedded quotes/backslashes are escaped, an embedded
+    // LITERAL newline is not. findModuleIdsByArgument used to split blocks
+    // with a naive `raw.split(/\r?\n(?=Module #)/g)` (not quote-aware, unlike
+    // parseSinkInputs' splitBlocksQuoteAware), so a crafted module.description
+    // containing "\nModule #999\n\tArgument: source=<needle>...\n" fabricated
+    // an entire extra "Module #" block with an attacker-chosen id that never
+    // really existed - which could collide with a real, unrelated module's id
+    // elsewhere in the listing and cause callers to unload-module the wrong,
+    // legitimate module. The fix reuses splitBlocksQuoteAware (a still-open
+    // quote keeps a header-looking line from ever being treated as a real
+    // block boundary) plus an anchored `^Module #(\d+)/m` id match, so the
+    // fabricated text - if it survives the merge - is at worst attributed
+    // back to the block it actually came from, never to an unrelated real id.
+    const raw = `
+Module #5
+	Name: module-null-sink
+	Properties:
+		module.description = "Evil
+Module #999
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=VencordExcludedAudio"
+
+Module #7
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=real_speakers
+`.trim();
+
+    const result = findModuleIdsByArgument(raw, "source=VencordExcludedAudio.monitor");
+    // Must find the real loopback (7) and must NOT contain the fabricated,
+    // attacker-chosen id "999".
+    assert.deepEqual(result, ["7"]);
+});
+
+test("an injected fake Module block cannot collide with a real, unrelated module's id", () => {
+    // Regression (round 3), collision variant: the fabricated block's chosen
+    // id can be crafted to match a REAL, wholly unrelated module elsewhere in
+    // the same listing (e.g. the user's actual bluetooth-policy module). If
+    // findModuleIdsByArgument's id extraction were still unanchored
+    // (`Module #(\d+)` searched anywhere in the block), it could report that
+    // colliding id - and a caller would then unload-module the real,
+    // unrelated module instead of anything to do with this plugin. With the
+    // fix, any injected text that survives the quote-aware merge is always
+    // attributed to the block it's physically embedded in (module 5 here),
+    // never to module 10's separate, real block.
+    const raw = `
+Module #5
+	Name: module-null-sink
+	Properties:
+		module.description = "Evil
+Module #10
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=SOME_FAKE_TARGET"
+
+Module #10
+	Name: module-bluetooth-policy
+	Argument: real unrelated legitimate bluetooth module, nothing to do with us
+`.trim();
+
+    const result = findModuleIdsByArgument(raw, "source=VencordExcludedAudio.monitor");
+    // The injected "Argument:" line is inside a quoted property value, so
+    // stripQuotedContent blanks it out before matching - it must not be
+    // treated as a real Argument line at all (for module 5 or anyone else),
+    // and "10" (the real, unrelated bluetooth-policy module) must never
+    // appear in the result.
+    assert.deepEqual(result, []);
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("shortSinksContainsName");

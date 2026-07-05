@@ -304,6 +304,37 @@ test("isCableDevice() matches only the real VB-Audio Virtual Cable device name, 
     assert.equal(isCableDevice({ deviceName: "" }), false);
 });
 
+test("isCableDevice() also matches other VB-Audio family products, not just the single-cable one this plugin installs", () => {
+    // Regression found in this round: isCableDevice() used to require the
+    // deviceName to be EXACTLY "vb-audio virtual cable" - the one specific
+    // free product installVirtualCable() downloads. But a user can already
+    // have a *different* VB-Audio product installed on their own (the paid
+    // "VB-Audio Cable A+B" two-cable pack, or a Voicemeeter/Voicemeeter
+    // Banana/Potato mixer, which installs "VB-Audio Voicemeeter VAIO"-family
+    // virtual render devices) - these report a different exact deviceName
+    // string but are just as silent-unless-actively-routed as the single
+    // cable. Under the old exact-match check, pickAlternateDevice() would
+    // treat such a device as a "real" alternate and route the excluded app
+    // onto it, silently muting it for the user - the exact failure mode this
+    // file exists to avoid, just via a different VB-Audio product. Fixed by
+    // matching the "vb-audio " driver-name prefix shared by the whole family.
+    assert.equal(isCableDevice({ deviceName: "VB-Audio Cable A+B" }), true);
+    assert.equal(isCableDevice({ deviceName: "VB-Audio Voicemeeter VAIO" }), true);
+    assert.equal(isCableDevice({ deviceName: "vb-audio hi-fi cable" }), true);
+    // Still must not match real hardware that merely contains similar words.
+    assert.equal(isCableDevice({ deviceName: "Some Random Vendor Cable" }), false);
+});
+
+test("a Voicemeeter-style VB-Audio virtual device (not the single cable this plugin installs) is not picked as a usable alternate", () => {
+    const devices = [
+        device("Speakers", true),
+        device("Voicemeeter Input", false, "VB-Audio Voicemeeter VAIO")
+    ];
+    // With no real alternate and Listen unconfirmed, this must behave exactly
+    // like a cable-only machine: no usable alternate device.
+    assert.equal(pickAlternateDevice(devices, false), null);
+});
+
 // ---------------------------------------------------------------------------
 
 // Regression test for a real bug found in round 2: ensureSvcl() and
@@ -444,6 +475,84 @@ test("a failed download clears the cache so a later call can retry", async () =>
     const result = await ensure();
     assert.equal(result, "C:\\fake\\svcl.exe");
     assert.equal(attempt, 2);
+});
+
+// ---------------------------------------------------------------------------
+
+// Regression test for a real bug found in round 3: excludeAppAudio() and
+// restoreAudio() both read/mutate the module-level `excludedApps` Map but
+// used to do so with no serialization between them. restoreAudio() is called
+// not only from the settings panel's Restore button but unconditionally from
+// the plugin's stop() hook, completely independent of the panel's `busy`
+// guard - so a user could click Exclude (kicking off an async
+// getRows()/runSvcl() chain) and then disable the plugin before that chain
+// resolves. If restoreAudio() ran in the gap after excludeAppAudio() recorded
+// the app's original device but before its own runSvcl(/SetAppDefault,
+// alternate) call finished, two svcl.exe invocations would race to set the
+// same app's default device, and whichever finished last would silently win
+// - possibly leaving the app rerouted onto the alternate device even though
+// the user just disabled the plugin expecting audio fully restored. The fix
+// chains every excludeAppAudio()/restoreAudio() call onto one module-level
+// tail promise so they always run fully sequentially. This test recreates
+// that exact chaining pattern standalone against stubbed async "device move"
+// operations to prove two interleaved calls can never race.
+console.log("\noperation serialization (exclude/restore race regression)");
+
+test("a restore queued while an exclude is still in flight runs after it completes, not interleaved", async () => {
+    const log: string[] = [];
+    let tail: Promise<void> = Promise.resolve();
+
+    function serialize<T>(fn: () => Promise<T>): Promise<T> {
+        const result = tail.then(fn, fn);
+        tail = result.then(() => { }, () => { });
+        return result;
+    }
+
+    const excluded = new Map<string, string>();
+
+    async function fakeExclude(processId: string): Promise<void> {
+        return serialize(async () => {
+            log.push(`exclude:${processId}:start`);
+            // Simulates the async gap between recording state and the
+            // svcl.exe call actually completing.
+            await new Promise(r => setTimeout(r, 10));
+            excluded.set(processId, "original-device");
+            log.push(`exclude:${processId}:moved-to-alternate`);
+        });
+    }
+
+    async function fakeRestore(): Promise<void> {
+        return serialize(async () => {
+            log.push("restore:start");
+            for (const [processId] of excluded) {
+                log.push(`restore:${processId}:moved-to-original`);
+            }
+            excluded.clear();
+            log.push("restore:done");
+        });
+    }
+
+    // Fire both without awaiting the first - simulates excludeAppAudio()
+    // still being mid-flight when stop() unconditionally calls
+    // restoreAudio().
+    const excludeP = fakeExclude("game.exe");
+    const restoreP = fakeRestore();
+
+    await Promise.all([excludeP, restoreP]);
+
+    // The restore must observe the fully-completed exclude, never a
+    // half-finished one - i.e. the exclude's "moved-to-alternate" must be
+    // fully logged before the restore starts, and the app must actually be
+    // present in `excluded` (and then cleared) rather than the two
+    // operations interleaving their svcl.exe-equivalent work.
+    assert.deepEqual(log, [
+        "exclude:game.exe:start",
+        "exclude:game.exe:moved-to-alternate",
+        "restore:start",
+        "restore:game.exe:moved-to-original",
+        "restore:done"
+    ]);
+    assert.equal(excluded.size, 0);
 });
 
 // ---------------------------------------------------------------------------

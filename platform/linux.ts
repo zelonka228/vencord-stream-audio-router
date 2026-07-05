@@ -222,27 +222,60 @@ export function findOwnerModuleOfSink(raw: string, sinkName: string): string | n
  * Parses `pactl list modules` (verbose) output and returns the ids of every
  * module whose "Argument:" line contains the given needle as a whole token.
  * Pure function.
+ *
+ * Like sink-inputs, a module's `Properties:` block can contain free-text
+ * values that come from attacker/hardware-influenced sources - e.g.
+ * `module.description`, which for things like a Bluetooth-backed module can
+ * mirror a device's self-advertised name - and pactl escapes those the same
+ * way it escapes application.name/media.name: embedded quotes/backslashes
+ * are escaped, but an embedded LITERAL newline is not. Without a quote-aware
+ * split, a crafted property value containing "\nModule #999\n\tArgument:
+ * source=<needle>...\n" would inject a fabricated extra "Module #" block
+ * with an attacker-chosen id into the listing - which could collide with a
+ * real, wholly unrelated module's id elsewhere in the same listing, causing
+ * callers (ensureLocalLoopback's stale-cleanup, restoreAudio) to
+ * unload-module the wrong, legitimate module. Use the same
+ * splitBlocksQuoteAware helper used for sink-inputs so a header-looking line
+ * inside a still-open quoted property value is never treated as a real
+ * block boundary.
  */
 export function findModuleIdsByArgument(raw: string, needle: string): string[] {
     if (!raw) return [];
 
-    const blocks = raw.split(/\r?\n(?=Module #)/g);
+    const blocks = splitBlocksQuoteAware(raw, "Module #").filter(b => b.trim().startsWith("Module #"));
     const ids: string[] = [];
     // Match needle as a whole token (bounded by start/whitespace and end/whitespace)
     // so e.g. "source=Foo.monitor" doesn't false-positive on "source=FooBar.monitor".
     const needleRegex = new RegExp(`(?:^|\\s)${escapeRegExp(needle)}(?:\\s|$)`);
 
     for (const block of blocks) {
+        // Blank out quoted-string contents first: splitBlocksQuoteAware only
+        // guarantees a fake header-looking line trapped inside a still-open
+        // quote wasn't treated as a NEW block boundary - the trapped text is
+        // still physically present in this block's string. Without this,
+        // e.g. a module.description value containing an embedded literal
+        // newline followed by fake "Argument: source=<needle>..." /
+        // "Module #<n>" lines would still be matched by the plain regexes
+        // below, even though pactl never actually printed them as real
+        // fields.
+        const stripped = stripQuotedContent(block);
+
         // [^\S\r\n]* (not \s*) so we only skip horizontal whitespace after the
         // colon - \s* would also swallow the line break when Argument is empty
         // (e.g. module-suspend-on-idle prints a bare "Argument: " line), which
         // let (.*) bleed into the next line's text and could false-positive
         // against the needle.
-        const argMatch = block.match(/Argument:[^\S\r\n]*(.*)/);
+        const argMatch = stripped.match(/Argument:[^\S\r\n]*(.*)/);
         if (!argMatch) continue;
         if (!needleRegex.test(argMatch[1])) continue;
 
-        const idMatch = block.match(/Module #(\d+)/);
+        // Anchored to the block's own header line (modulo leading
+        // indentation isn't expected here, but staying consistent with the
+        // sink/module header shape) so an unanchored search can never pick
+        // up a "Module #<n>" substring that an attacker embedded further
+        // down inside this same block's own free-text properties instead of
+        // the block's real leading header.
+        const idMatch = stripped.match(/^Module #(\d+)/m);
         if (idMatch) ids.push(idMatch[1]);
     }
 
@@ -251,6 +284,48 @@ export function findModuleIdsByArgument(raw: string, needle: string): string[] {
 
 function escapeRegExp(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Replaces the contents of every double-quoted string in `block` with `#`
+ * (same length, so line/column positions and the overall block length are
+ * preserved) while leaving everything outside quotes untouched. Quote-aware
+ * in the same sense as splitBlocksQuoteAware: an escaped quote/backslash
+ * (`\"`, `\\`) does not toggle the in-quote state.
+ *
+ * Used before running "top-level field" regexes (Argument:, Module #, etc.)
+ * over a block that has already survived splitBlocksQuoteAware's boundary
+ * check. That check guarantees any header-looking text trapped inside a
+ * still-open quote wasn't treated as a new block boundary - but the block
+ * itself can still legitimately CONTAIN that trapped text (e.g. inside a
+ * module.description value), and a plain (non-anchored, or line-anchored
+ * with the `m` flag) regex would still happily match a fake "Argument:" or
+ * "Module #<n>" line sitting inside that quoted value. Blanking out quoted
+ * content first means only text pactl actually printed as real top-level
+ * fields can ever match.
+ */
+function stripQuotedContent(block: string): string {
+    let out = "";
+    let inQuote = false;
+    for (let i = 0; i < block.length; i++) {
+        const c = block[i];
+        if (c === "\\" && inQuote) {
+            out += "##";
+            i++;
+            continue;
+        }
+        if (c === "\"") {
+            inQuote = !inQuote;
+            out += c;
+            continue;
+        }
+        if (inQuote && c !== "\n" && c !== "\r") {
+            out += "#";
+        } else {
+            out += c;
+        }
+    }
+    return out;
 }
 
 /**
