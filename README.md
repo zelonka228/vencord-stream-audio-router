@@ -279,7 +279,7 @@ sensitive, must end in `.exe`) and the device ID string.
 #### macOS walkthrough
 
 ```bash
-brew install blackhole-2ch
+brew install --cask blackhole-2ch
 ```
 
 Use the plugin's buttons to open Audio MIDI Setup (build a Multi-Output
@@ -668,7 +668,7 @@ Get-Content "$env:TEMP\sessions.csv"
 #### Инструкция для macOS
 
 ```bash
-brew install blackhole-2ch
+brew install --cask blackhole-2ch
 ```
 
 Через кнопки плагина открой Audio MIDI Setup (собери Multi-Output Device
