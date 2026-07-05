@@ -193,7 +193,22 @@ export function extractAudioApps(rows: SvclRow[]): AudioApp[] {
         if (row.type !== "Application" || row.direction !== "Render") continue;
         if (row.deviceState !== "Active") continue;
 
-        const id = row.processPath ? basename(row.processPath) : row.name;
+        // Some sandboxed/UWP (Microsoft Store) audio sessions report an empty
+        // Process Path - svcl.exe can't always resolve the image path of a
+        // process running under a restricted AppContainer token. This used to
+        // fall back to the row's friendly session name (e.g. "Spotify")
+        // instead, but that name has no ".exe" and often doesn't match the
+        // process's actual image name at all (UWP audio sessions are commonly
+        // hosted by a wrapper like "WWAHost.exe", not an exe named after the
+        // app) - so it's not a usable id for svcl's /SetAppDefault regardless.
+        // Skipping the row entirely is more honest than listing an app the
+        // user could select but which excludeAppAudio() would always reject
+        // (it requires a ".exe" suffix) or, worse, that would silently no-op
+        // against the wrong process if the id happened to coincidentally
+        // collide with something else.
+        if (!row.processPath) continue;
+
+        const id = basename(row.processPath);
         if (!id || seen.has(id)) continue;
 
         seen.set(id, { id, name: row.name || id });
@@ -241,33 +256,58 @@ export function findCableCaptureRegistryKey(rows: SvclRow[]): string | null {
     return row?.registryKey ?? null;
 }
 
+// Caches the in-flight download/extract so concurrent callers share one
+// attempt instead of racing. Without this, two near-simultaneous callers
+// (e.g. WindowsDeviceStatus's `Promise.all([windowsHasSecondPlaybackDevice(),
+// windowsIsVirtualCableInstalled()])` on mount, before svcl.exe has ever been
+// downloaded) would both see `existsSync(exe) === false`, both fetch+unzip
+// the archive, and both `writeFile()` the same svcl.exe path concurrently -
+// on Windows that can surface as EBUSY/EPERM (the file is still open for
+// writing by the other in-flight extraction) or, worse, let one caller's
+// execFileAsync() launch a truncated/partially-written exe if it reads the
+// file between the other write's open and its completion. Cleared on
+// failure so a later call can retry instead of being stuck replaying a
+// failed download forever.
+let svclEnsurePromise: Promise<string> | null = null;
+
 async function ensureSvcl(): Promise<string> {
-    const { dir, exe } = await getSvclPaths();
-    const { existsSync } = await import("fs");
-    if (existsSync(exe)) return exe;
+    if (svclEnsurePromise) return svclEnsurePromise;
 
-    const res = await fetch(SVCL_URL);
-    if (!res.ok) throw new Error(`Failed to download svcl.exe: ${res.status} ${res.statusText}`);
+    svclEnsurePromise = (async () => {
+        const { dir, exe } = await getSvclPaths();
+        const { existsSync } = await import("fs");
+        if (existsSync(exe)) return exe;
 
-    const zipBytes = new Uint8Array(await res.arrayBuffer());
-    const { unzipSync } = await import("fflate");
-    const files = unzipSync(zipBytes);
+        const res = await fetch(SVCL_URL);
+        if (!res.ok) throw new Error(`Failed to download svcl.exe: ${res.status} ${res.statusText}`);
 
-    await mkdir(dir, { recursive: true });
-    for (const [name, data] of Object.entries(files)) {
-        // Zip entries can include nested paths (e.g. "docs/readme.txt");
-        // writeFile() does not create missing parent directories on its own,
-        // so a nested entry would otherwise throw ENOENT instead of
-        // extracting. Skip directory entries themselves (zero-length name
-        // ending in "/") since there's nothing to write for them.
-        if (name.endsWith("/")) continue;
-        const dest = safeExtractPath(dir, name);
-        await mkdir(dirname(dest), { recursive: true });
-        await writeFile(dest, data);
+        const zipBytes = new Uint8Array(await res.arrayBuffer());
+        const { unzipSync } = await import("fflate");
+        const files = unzipSync(zipBytes);
+
+        await mkdir(dir, { recursive: true });
+        for (const [name, data] of Object.entries(files)) {
+            // Zip entries can include nested paths (e.g. "docs/readme.txt");
+            // writeFile() does not create missing parent directories on its own,
+            // so a nested entry would otherwise throw ENOENT instead of
+            // extracting. Skip directory entries themselves (zero-length name
+            // ending in "/") since there's nothing to write for them.
+            if (name.endsWith("/")) continue;
+            const dest = safeExtractPath(dir, name);
+            await mkdir(dirname(dest), { recursive: true });
+            await writeFile(dest, data);
+        }
+
+        if (!existsSync(exe)) throw new Error("svcl.exe was not found in the downloaded archive.");
+        return exe;
+    })();
+
+    try {
+        return await svclEnsurePromise;
+    } catch (e) {
+        svclEnsurePromise = null;
+        throw e;
     }
-
-    if (!existsSync(exe)) throw new Error("svcl.exe was not found in the downloaded archive.");
-    return exe;
 }
 
 async function runSvcl(args: string[]): Promise<string> {
@@ -398,11 +438,23 @@ export async function openAppVolumeSettings(): Promise<void> {
 
 const VB_CABLE_URL = "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
 
-/** True if a machine has any real playback device besides the current default. */
+/**
+ * True if a machine has a second playback device that excludeAppAudio() can
+ * actually route onto right now. This intentionally does NOT count
+ * VB-Cable's "CABLE Input" as satisfying the requirement: pickAlternateDevice()
+ * only falls back to the cable when "Listen to this device" is confirmed
+ * configured, and isCableListenConfigured() always returns false (see the
+ * long comment above it) - so a machine with only the cable installed and no
+ * other real output device would still make excludeAppAudio() throw. If this
+ * returned true for a cable-only device, WindowsDeviceStatus would hide its
+ * "install a second device" warning (`if (hasSecondDevice) return null;` in
+ * index.tsx) and the Exclude button would then fail with a confusing error
+ * right after the UI implied everything was ready.
+ */
 export async function hasSecondPlaybackDevice(): Promise<boolean> {
     const rows = await getRows();
     const devices = extractRenderDevices(rows);
-    return devices.some(d => !d.isDefault);
+    return devices.some(d => !d.isDefault && !d.name.toLowerCase().includes("cable"));
 }
 
 /**

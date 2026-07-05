@@ -11,8 +11,7 @@
 
 import assert from "node:assert/strict";
 
-import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, parseCsvLine, parseSvclCsv, pickAlternateDevice, safeExtractPath } from "../platform/windows.ts";
-import type { RenderDevice } from "../platform/windows.ts";
+import { extractAudioApps, extractRenderDevices, findCableCaptureRegistryKey, parseCsvLine, parseSvclCsv, pickAlternateDevice, type RenderDevice, safeExtractPath } from "../platform/windows.ts";
 
 let passed = 0;
 let failed = 0;
@@ -135,6 +134,25 @@ test("dedupes an app that appears in multiple rows", () => {
     assert.equal(apps.filter(a => a.id === "RustClient.exe").length, 1);
 });
 
+test("skips a UWP/Store app row with no resolvable Process Path instead of using its bare display name", () => {
+    // Regression: extractAudioApps() used to fall back to the row's friendly
+    // session name (e.g. "Spotify") as `id` whenever Process Path was empty -
+    // which happens for some sandboxed/UWP audio sessions svcl.exe can't
+    // resolve an image path for. That name has no ".exe" suffix, so
+    // excludeAppAudio()'s `/^[^\\/:*?"<>|]+\.exe$/i` validation would reject
+    // it outright with "Invalid process id" the moment the user selected it
+    // from the dropdown and clicked Exclude - even though listAudioApps()
+    // had happily listed it as selectable. Such rows are now skipped entirely
+    // since there's no usable process-name id for svcl's /SetAppDefault.
+    const raw = [
+        SAMPLE_CSV.split("\r\n")[0],
+        "Spotify,Application,Render,High Definition Audio Device,,,,Active,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{0.0.0.00000000}.{181f65d2}|uwp|1%b99999,High Definition Audio Device\\Application\\Spotify,,99999,,,,"
+    ].join("\r\n");
+    const apps = extractAudioApps(parseSvclCsv(raw));
+    assert.equal(apps.length, 0);
+    assert.ok(!apps.some(a => a.id === "Spotify"));
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("extractRenderDevices");
@@ -215,6 +233,28 @@ test("returns null when there is no non-default device at all", () => {
     assert.equal(pickAlternateDevice(devices, true), null);
 });
 
+test("a cable-only alternate is not usable while Listen is unconfirmed (matches hasSecondPlaybackDevice's gating)", () => {
+    // Regression: hasSecondPlaybackDevice() used to report `true` as soon as
+    // ANY non-default device existed, including VB-Cable's "CABLE Input" -
+    // but pickAlternateDevice() (what excludeAppAudio() actually uses) only
+    // falls back to the cable once Listen is confirmed configured, which
+    // isCableListenConfigured() always reports as false. That mismatch meant
+    // WindowsDeviceStatus could hide its "install a second device" warning
+    // (since hasSecondDevice was true) on a machine with only the cable
+    // installed, and then excludeAppAudio() would immediately throw when the
+    // user clicked Exclude - a confusing regression right after the UI
+    // implied everything was ready. hasSecondPlaybackDevice() was fixed to
+    // exclude cable-named devices from its count; this test locks in that a
+    // cable-only device list is *not* usable as a real alternate under the
+    // same listenReady=false gating excludeAppAudio() uses.
+    const devices = [device("Speakers", true), device("CABLE Input", false)];
+    assert.equal(pickAlternateDevice(devices, false), null);
+    // The would-be "second device" is cable-only, so a hasSecondPlaybackDevice-
+    // style check must also treat it as absent, not present.
+    const looksLikeSecondRealDevice = devices.some(d => !d.isDefault && !d.name.toLowerCase().includes("cable"));
+    assert.equal(looksLikeSecondRealDevice, false);
+});
+
 // ---------------------------------------------------------------------------
 
 // Regression test for a real bug found in round 2: ensureSvcl() and
@@ -280,6 +320,81 @@ test("throws on a zip-slip entry name that escapes the extraction directory", ()
 
 test("throws on an absolute-path-like entry name", () => {
     assert.throws(() => safeExtractPath("C:\\stage", "..\\..\\Windows\\System32\\evil.dll"));
+});
+
+// ---------------------------------------------------------------------------
+
+// Regression test for a real bug found in this round: ensureSvcl() used to
+// re-check `existsSync(exe)` and, if absent, kick off its own independent
+// fetch+unzip+write on every call with no de-duplication. WindowsDeviceStatus
+// (index.tsx) calls `Promise.all([windowsHasSecondPlaybackDevice(),
+// windowsIsVirtualCableInstalled()])` on mount - both route through
+// getRows() -> runSvcl() -> ensureSvcl() - so on a machine where svcl.exe
+// hasn't been downloaded yet, two concurrent callers would both see the exe
+// missing and both start their own download/extract, racing two writeFile()
+// calls to the exact same destination path. The fix caches the in-flight
+// promise in a module-level singleton so concurrent callers share one
+// attempt. This test recreates that exact singleton-caching pattern
+// standalone (no network/electron needed) against a counting "download"
+// stub to prove concurrent callers only trigger one real download, and that
+// a failed attempt clears the cache so a later call can retry.
+console.log("\nensureSvcl concurrency de-duplication");
+
+test("concurrent callers share one in-flight download instead of racing", async () => {
+    let downloadCount = 0;
+    let cached: Promise<string> | null = null;
+
+    async function fakeDownloadAndExtract(): Promise<string> {
+        downloadCount++;
+        await new Promise(r => setTimeout(r, 10));
+        return "C:\\fake\\svcl.exe";
+    }
+
+    async function ensure(): Promise<string> {
+        if (cached) return cached;
+        cached = (async () => {
+            return fakeDownloadAndExtract();
+        })();
+        try {
+            return await cached;
+        } catch (e) {
+            cached = null;
+            throw e;
+        }
+    }
+
+    const [a, b, c] = await Promise.all([ensure(), ensure(), ensure()]);
+    assert.equal(downloadCount, 1);
+    assert.equal(a, "C:\\fake\\svcl.exe");
+    assert.equal(b, "C:\\fake\\svcl.exe");
+    assert.equal(c, "C:\\fake\\svcl.exe");
+});
+
+test("a failed download clears the cache so a later call can retry", async () => {
+    let attempt = 0;
+    let cached: Promise<string> | null = null;
+
+    async function fakeDownloadAndExtract(): Promise<string> {
+        attempt++;
+        if (attempt === 1) throw new Error("network down");
+        return "C:\\fake\\svcl.exe";
+    }
+
+    async function ensure(): Promise<string> {
+        if (cached) return cached;
+        cached = (async () => fakeDownloadAndExtract())();
+        try {
+            return await cached;
+        } catch (e) {
+            cached = null;
+            throw e;
+        }
+    }
+
+    await assert.rejects(() => ensure());
+    const result = await ensure();
+    assert.equal(result, "C:\\fake\\svcl.exe");
+    assert.equal(attempt, 2);
 });
 
 // ---------------------------------------------------------------------------

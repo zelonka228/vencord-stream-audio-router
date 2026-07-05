@@ -23,9 +23,17 @@ import { promisify } from "util";
 
 const exec = promisify(execFile);
 
+// BlackHole ships as several separate driver bundles depending on which
+// channel-count variant was installed - blackhole-2ch, blackhole-16ch,
+// blackhole-64ch and blackhole-128ch are all distinct, commonly used
+// Homebrew casks (and direct .pkg installers use the same bundle names),
+// so a user who installed anything other than the default 2ch variant
+// must still be detected as "installed".
 const BLACKHOLE_DRIVER_PATHS = [
     "/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver",
-    "/Library/Audio/Plug-Ins/HAL/BlackHole16ch.driver"
+    "/Library/Audio/Plug-Ins/HAL/BlackHole16ch.driver",
+    "/Library/Audio/Plug-Ins/HAL/BlackHole64ch.driver",
+    "/Library/Audio/Plug-Ins/HAL/BlackHole128ch.driver"
 ];
 
 export async function checkBlackHole(): Promise<{ installed: boolean; }> {
@@ -34,7 +42,12 @@ export async function checkBlackHole(): Promise<{ installed: boolean; }> {
 }
 
 export function getInstallCommand(): string {
-    return "brew install blackhole-2ch";
+    // BlackHole installs a kernel-level Core Audio HAL driver via a signed
+    // .pkg, so it's distributed as a Homebrew *cask*, not a formula - plain
+    // `brew install blackhole-2ch` (no --cask) fails with "No available
+    // formula with the name" on modern Homebrew, which no longer falls
+    // back to searching casks automatically.
+    return "brew install --cask blackhole-2ch";
 }
 
 /** Opens Audio MIDI Setup, where the user can build a Multi-Output Device combining BlackHole + their speakers. */

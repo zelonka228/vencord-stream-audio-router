@@ -84,7 +84,11 @@ export function findOwnerModuleOfSink(raw: string, sinkName: string): string | n
 
     const blocks = raw.split(/\r?\n(?=Sink #)/g);
     for (const block of blocks) {
-        if (!new RegExp(`Name:\\s*${escapeRegExp(sinkName)}\\s*$`, "m").test(block)) continue;
+        // Anchored to the start of the line (modulo leading indentation) so a
+        // *different* field - e.g. `Description:` - can never false-match just
+        // because its value happens to end in "Name: <sinkName>". Only the
+        // sink's own top-level "Name:" property line should count.
+        if (!new RegExp(`^[^\\S\\r\\n]*Name:\\s*${escapeRegExp(sinkName)}\\s*$`, "m").test(block)) continue;
 
         const ownerMatch = block.match(/Owner Module:\s*(\d+)/);
         return ownerMatch ? ownerMatch[1] : null;
@@ -172,6 +176,23 @@ async function ensureExcludedSink(): Promise<void> {
 async function ensureLocalLoopback(): Promise<void> {
     const defaultSink = (await pactl(["get-default-sink"])).trim();
     if (!defaultSink) throw new Error("Could not determine the default output sink.");
+
+    // If our own dedicated null-sink has somehow become the system default -
+    // e.g. the real output device was unplugged while the sink from a
+    // previous (crashed or improperly restored) session was still loaded,
+    // and PipeWire/PulseAudio fell back to whatever sink remained - wiring a
+    // loopback "source=EXCLUDED_SINK_NAME.monitor sink=EXCLUDED_SINK_NAME"
+    // would feed the null-sink's monitor back into itself. That's a silent
+    // no-op audio path at best and a feedback loop at worst, and it would
+    // leave the excluded app completely inaudible locally. Refuse instead of
+    // wiring something broken.
+    if (defaultSink === EXCLUDED_SINK_NAME) {
+        throw new Error(
+            `The system default output is currently "${EXCLUDED_SINK_NAME}" (this plugin's own hidden sink), ` +
+            "not a real speaker/headphone device. Pick your actual output device as the default " +
+            "(e.g. in your system sound settings) and try again."
+        );
+    }
 
     const modulesRaw = await pactl(["list", "modules"]);
     const existing = findModuleIdsByArgument(modulesRaw, `source=${EXCLUDED_SINK_NAME}.monitor`);

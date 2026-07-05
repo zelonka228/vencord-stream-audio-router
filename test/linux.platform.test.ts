@@ -135,11 +135,11 @@ Sink Input #8
 
     const result = parseSinkInputs(raw);
     assert.equal(result.length, 1);
-    assert.equal(result[0].name, `He said "Hi"`);
+    assert.equal(result[0].name, "He said \"Hi\"");
 });
 
 test("ignores unrelated leading noise before the first block", () => {
-    const raw = `Some unrelated warning line\nSink Input #10\n\tProperties:\n\t\tapplication.name = "OBS"`;
+    const raw = "Some unrelated warning line\nSink Input #10\n\tProperties:\n\t\tapplication.name = \"OBS\"";
     const result = parseSinkInputs(raw);
     assert.equal(result.length, 1);
     assert.equal(result[0].id, "10");
@@ -185,6 +185,28 @@ Sink #2
 `.trim();
 
     assert.equal(findOwnerModuleOfSink(raw, "VencordStreamMix"), null);
+});
+
+test("does not false-positive on an unrelated field whose value happens to end in 'Name: <target>'", () => {
+    // Regression: the "Name:" match used to only anchor on `\s*$`, so a
+    // *different* field (e.g. Description) whose text incidentally ends in
+    // "Name: VencordStreamMix" would satisfy the old unanchored regex and
+    // report that earlier, unrelated sink's Owner Module instead of the real
+    // one - restoreAudio() would then unload the wrong module.
+    const raw = `
+Sink #1
+	State: RUNNING
+	Name: alsa_output.foo
+	Description: My Device Name: VencordStreamMix
+	Owner Module: 6
+
+Sink #2
+	State: RUNNING
+	Name: VencordStreamMix
+	Owner Module: 55
+`.trim();
+
+    assert.equal(findOwnerModuleOfSink(raw, "VencordStreamMix"), "55");
 });
 
 // ---------------------------------------------------------------------------
@@ -271,6 +293,34 @@ Module #1
 `.trim();
 
     assert.deepEqual(findModuleIdsByArgument(raw, "anything"), []);
+});
+
+test("a loopback pointed at the excluded sink itself is detectable as self-referential", () => {
+    // Regression: ensureLocalLoopback() looks up "already pointed at the
+    // current default sink" via findModuleIdsByArgument(modulesRaw,
+    // `sink=${defaultSink}`). If get-default-sink ever reports the plugin's
+    // OWN hidden null-sink as the system default (e.g. the real output
+    // device got unplugged while a stale sink from a previous crashed/
+    // improperly-restored session was still loaded, and PipeWire fell back
+    // to it), the naive "sink=" lookup happily matches a loopback whose
+    // source AND sink both name the excluded sink - a self-feedback loopback
+    // that plays nothing anywhere. ensureLocalLoopback() now special-cases
+    // defaultSink === EXCLUDED_SINK_NAME and throws instead of wiring this.
+    // This test locks in that the raw string-matching building block used to
+    // detect that condition actually fires for this exact argument shape.
+    const raw = `
+Module #1
+	Name: module-loopback
+	Argument: source=VencordExcludedAudio.monitor sink=VencordExcludedAudio latency_msec=1
+`.trim();
+
+    const bySource = findModuleIdsByArgument(raw, "source=VencordExcludedAudio.monitor");
+    const bySelfSink = findModuleIdsByArgument(raw, "sink=VencordExcludedAudio");
+    assert.deepEqual(bySource, ["1"]);
+    assert.deepEqual(bySelfSink, ["1"]);
+    // Same module id shows up both ways - proof the old code would have
+    // treated this self-loopback as "a valid loopback already targeting the
+    // current default" and returned early instead of refusing to proceed.
 });
 
 test("can detect a loopback whose source matches but whose sink target has changed (stale after default-sink switch)", () => {
