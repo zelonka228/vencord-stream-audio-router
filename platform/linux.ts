@@ -218,8 +218,33 @@ export function findOwnerModuleOfSink(raw: string, sinkName: string): string | n
         // the literal text "Owner Module: <digits>" - without ever needing a
         // fabricated extra block or an embedded newline. Only the block's own
         // top-level "Owner Module:" property line may ever count.
-        const ownerMatch = block.match(/^[^\S\r\n]*Owner Module:\s*(\d+)\s*$/m);
-        if (ownerMatch) matches.push(ownerMatch[1]);
+        //
+        // Regression (round 5): this used to be a single, non-global
+        // `.match()`, which only ever looks at the FIRST "Owner Module:"
+        // line in the block. That's unsafe on its own: `raw.split(/\r?\n(?=Sink
+        // #)/g)` above is NOT quote-aware (these fields have no quoting to
+        // even be aware of), so a free-text field containing an embedded
+        // literal "\nSink #999\nName: <sinkName>\nOwner Module: <fake id>"
+        // does not need to become a fully separate, self-contained fabricated
+        // block to cause harm - if the injected text lands *inside* the
+        // legitimate block (e.g. inside its Description field, before the
+        // block's own real "Owner Module:" line), the naive split slices the
+        // block in two, stranding the real "Owner Module:" line in whatever
+        // trails the fabricated "Sink #999" header while the fake id sits
+        // right where the first-match search looks first. The result was a
+        // single (non-ambiguous, so never refused) match on the attacker-
+        // chosen id, with the real owner's id silently dropped instead of
+        // ever being compared against it. Collecting every "Owner Module:"
+        // line in the block (not just the first) means any such injected
+        // extra line - wherever the split happens to leave it - still shows
+        // up as a second candidate, so the existing "more than one match ->
+        // refuse" invariant below catches this the same way it already
+        // catches the fully-separate-fake-block case.
+        const ownerMatches = block.match(/^[^\S\r\n]*Owner Module:\s*(\d+)\s*$/gm) ?? [];
+        for (const line of ownerMatches) {
+            const idMatch = line.match(/(\d+)/);
+            if (idMatch) matches.push(idMatch[1]);
+        }
     }
 
     if (matches.length > 1) return null;

@@ -348,6 +348,31 @@ Sink #55
     assert.equal(findOwnerModuleOfSink(raw, "VencordExcludedAudio"), "77");
 });
 
+test("an embedded-newline injection landing INSIDE the real block (not as a fully separate fake block) must not steal the real Owner Module line", () => {
+    // Regression (round 5): `findOwnerModuleOfSink` still splits blocks with
+    // the naive, non-quote-aware `raw.split(/\r?\n(?=Sink #)/g)` - unlike
+    // parseSinkInputs/findModuleIdsByArgument, there's no quoting on these
+    // bare fields to even be "aware" of. The existing ambiguous-block
+    // regression test above only covers the case where the injected text
+    // becomes a fully self-contained fake block (fake Name + fake Owner
+    // Module both inside the fabricated block), which correctly produces 2
+    // matches and refuses. But if the injected "\nSink #999\nName:
+    // <target>\nOwner Module: <fake id>" is placed inside a free-text field
+    // (e.g. Description) that appears BEFORE the real block's own trailing
+    // "Owner Module:" line, the naive split slices the real block in two:
+    // the real "Owner Module:" line ends up stranded after the fabricated
+    // "Sink #999" header instead of stapled to the real block. Because the
+    // old code used a non-global `.match()` (first occurrence only), it
+    // found only ONE "Owner Module:" line total - the attacker-chosen fake
+    // one, which appears first - and never even noticed the real line, so
+    // the "more than one match -> refuse" ambiguity guard never triggered.
+    // It must instead collect every "Owner Module:" line and refuse.
+    const raw =
+        "Sink #3\n\tName: RealSink\n\tDescription: fake\r\nSink #999\r\nName: RealSink\r\nOwner Module: 1337\n\tOwner Module: 5\n";
+
+    assert.equal(findOwnerModuleOfSink(raw, "RealSink"), null);
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("findModuleIdsByArgument");
