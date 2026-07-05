@@ -208,7 +208,12 @@ export function extractAudioApps(rows: SvclRow[]): AudioApp[] {
  */
 export function extractRenderDevices(rows: SvclRow[]): RenderDevice[] {
     return rows
-        .filter(row => row.type === "Device" && row.direction === "Render")
+        // deviceState must be "Active" - otherwise a disabled/unplugged device
+        // (still listed by svcl.exe, e.g. a headset that used to be plugged in)
+        // could get picked as the alternate output in pickAlternateDevice(),
+        // which would silently mute the excluded app instead of rerouting it -
+        // exactly the failure mode this backend exists to avoid.
+        .filter(row => row.type === "Device" && row.direction === "Render" && row.deviceState === "Active")
         .map(row => ({
             id: row.commandLineFriendlyId,
             itemId: row.itemId,

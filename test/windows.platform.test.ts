@@ -147,6 +147,21 @@ test("lists real playback devices with default flag", () => {
     assert.ok(devices.some(d => d.name === "Speakers" && !d.isDefault));
 });
 
+test("excludes a disabled/unplugged device even though it still shows up in svcl's listing", () => {
+    // Regression: extractRenderDevices() used to have no deviceState filter at
+    // all, unlike extractAudioApps() which requires "Active" - so a device
+    // that's no longer physically connected (e.g. unplugged headphones still
+    // remembered by Windows) could be returned as a candidate alternate
+    // device, and pickAlternateDevice() could route an excluded app onto it,
+    // silently muting it for the user.
+    const raw = [
+        SAMPLE_CSV.split("\r\n")[0],
+        "Old Headset,Device,Render,USB Audio Device,,,,Unplugged,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{x}.{y},USB Audio Device\\Device\\Old Headset\\Render,,,,HKEY_LOCAL_MACHINE\\Should\\Not\\Match,,"
+    ].join("\r\n");
+    const devices = extractRenderDevices(parseSvclCsv(raw));
+    assert.equal(devices.length, 0);
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("findCableCaptureRegistryKey");
