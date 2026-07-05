@@ -344,8 +344,10 @@ export async function excludeAppAudio(processId: string): Promise<void> {
 
     let alternateDevice: RenderDevice | null = null;
     if (defaultDevice) {
-        const listenReady = hasCableAlternate && !hasRealAlternate ? await isCableListenConfigured() : false;
-        alternateDevice = pickAlternateDevice(devices, listenReady);
+        // isCableListenConfigured() always returns false by design (see the
+        // comment above it) - calling it here would just spawn another
+        // svcl.exe run for a hardcoded result, so skip straight to false.
+        alternateDevice = pickAlternateDevice(devices, false);
     }
 
     if (!defaultDevice || !alternateDevice) {
