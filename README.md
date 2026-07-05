@@ -2,19 +2,64 @@
 
 # StreamAudioRouter
 
-**A Vencord plugin: share one app/window's video while Discord's "Share Audio" captures a *different* app's sound — without ever touching your mic.**
-**Плагин для Vencord: транслируешь окно одного приложения — а "Share Audio" Discord передаёт звук другого. Микрофон и голос при этом не трогаются.**
+### A Vencord plugin: share one app/window's video while Discord's "Share Audio" captures a *different* app's sound — without ever touching your mic.
+### Плагин для Vencord: транслируешь окно одного приложения — а "Share Audio" Discord передаёт звук другого. Микрофон и голос при этом не трогаются.
 
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey)](#how-it-works-per-os--как-это-работает-по-ос)
+<br>
 
-[Русский ниже ⤵](#-русская-версия)
+[![License](https://img.shields.io/badge/license-GPL--3.0-4B3D89?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-2C3E50?style=for-the-badge)](#how-it-works-per-os)
+[![Release](https://img.shields.io/github/v/release/zelonka228/vencord-stream-audio-router?style=for-the-badge&label=release&color=1F6FEB)](../../releases)
+
+<br>
+
+![Discord](https://img.shields.io/badge/Discord-zelonka228-5865F2?style=for-the-badge&logo=discord&logoColor=white)
+[![guns.lol](https://img.shields.io/badge/guns.lol-zelonka228-0B0B0F?style=for-the-badge)](https://guns.lol/zelonka228)
+
+</div>
+
+<br>
+
+<div align="center">
+
+### Built with
+
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat-square&logo=node.js&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-47848F?style=flat-square&logo=electron&logoColor=white)
+![Vencord](https://img.shields.io/badge/Vencord-plugin-6E7BFA?style=flat-square)
+![PulseAudio](https://img.shields.io/badge/PulseAudio%2FPipeWire-Linux%20backend-orange?style=flat-square)
+![NirSoft](https://img.shields.io/badge/svcl.exe-Windows%20backend-lightgrey?style=flat-square)
+![VB--Cable](https://img.shields.io/badge/VB--Audio%20Cable-optional-lightgrey?style=flat-square)
+![BlackHole](https://img.shields.io/badge/BlackHole-macOS%20backend-lightgrey?style=flat-square)
 
 </div>
 
 ---
 
-## 🇬🇧 English
+<div align="center">
+
+### Navigation · Навигация
+
+| English | Русский |
+|---|---|
+| [The problem](#the-problem) | [Проблема](#проблема) |
+| [The fix](#the-fix) | [Решение](#решение) |
+| [Why not patch the picker?](#why-not-patch-discords-screen-share-picker-directly) | [Почему не патчим окно демонстрации?](#почему-не-патчим-окно-демонстрации-discord-напрямую) |
+| [How it works, per OS](#how-it-works-per-os) | [Как это работает по ОС](#как-это-работает-по-ос) |
+| [Interface](#interface) | [Интерфейс](#интерфейс) |
+| [Windows: VB-Cable setup](#windows-setting-up-vb-audio-virtual-cable) | [Windows: установка VB-Cable](#windows-установка-vb-audio-virtual-cable) |
+| [Windows: svcl.exe dependency](#windows-the-svclexe-dependency) | [Windows: зависимость svcl.exe](#windows-зависимость-от-svclexe) |
+| [Installation](#installation) | [Установка](#установка) |
+| [Repo layout](#repo-layout) | [Структура репозитория](#структура-репозитория) |
+| [Verification](#verification) | [Проверка](#проверка) |
+| [License](#license) | [Лицензия](#лицензия) |
+
+</div>
+
+---
+
+## English
 
 ### The problem
 
@@ -395,7 +440,7 @@ GPL-3.0-or-later, matching Vencord's own license.
 
 ---
 
-## 🇷🇺 Русская версия
+## Русская версия
 
 ### Проблема
 
