@@ -290,12 +290,23 @@ export function extractRenderDevices(rows: SvclRow[]): RenderDevice[] {
  * for VB-Cable's recording endpoint ("CABLE Output") - the counterpart you
  * enable "Listen to this device" on to hear audio that was routed onto the
  * cable. Pure function.
+ *
+ * Uses isCableDevice() for the driver-family check (same as everywhere else
+ * that classifies a device as "the cable") instead of hardcoding the single
+ * exact string "vb-audio virtual cable". That exact-match was a leftover
+ * from before round 3 broadened cable detection to the whole "VB-Audio "
+ * product family (VB-Cable A+B, Voicemeeter, etc.) - left as-is, a user with
+ * e.g. Voicemeeter instead of the single-cable product would get `null` here
+ * even though the rest of this file (pickAlternateDevice(), etc.) correctly
+ * treats their virtual device as "the cable", making enableCableListen()
+ * throw a misleading "install VB-Audio Virtual Cable" error for a device
+ * that actually is a supported cable-family product.
  */
 export function findCableCaptureRegistryKey(rows: SvclRow[]): string | null {
     const row = rows.find(r =>
         r.type === "Device" &&
         r.direction === "Capture" &&
-        r.deviceName.trim().toLowerCase() === "vb-audio virtual cable" &&
+        isCableDevice(r) &&
         r.name.toLowerCase().includes("cable output") &&
         r.registryKey
     );
@@ -356,10 +367,27 @@ async function ensureSvcl(): Promise<string> {
     }
 }
 
+// Every svcl.exe invocation goes through excludeAppAudio()/restoreAudio()'s
+// serialize() tail (see the comment above `serialize()`), which means a
+// svcl.exe process that never exits - e.g. hung waiting on a modal dialog,
+// or wedged against a misbehaving audio driver's IPC call, both observed in
+// the wild with NirSoft's command-line tools on some machines - would leave
+// `operationTail` permanently unsettled: `result.then(() => {}, () => {})`
+// (the line that advances the tail for the *next* queued caller) itself
+// never runs, because `result` never resolves or rejects. Every later
+// excludeAppAudio()/restoreAudio() call, including the plugin's own
+// stop()-triggered restoreAudio(), would then await forever with no way to
+// recover short of restarting Discord. execFileAsync() has no default
+// timeout, so one is set explicitly here to bound the damage: on timeout,
+// Node kills the child process and execFileAsync's promise rejects, which
+// serialize() already handles correctly (a rejected call still unblocks the
+// queue for whoever's next).
+const SVCL_TIMEOUT_MS = 15_000;
+
 async function runSvcl(args: string[]): Promise<string> {
     const exePath = await ensureSvcl();
     try {
-        const { stdout } = await execFileAsync(exePath, args);
+        const { stdout } = await execFileAsync(exePath, args, { timeout: SVCL_TIMEOUT_MS });
         return stdout;
     } catch (e: any) {
         throw new Error(`svcl.exe ${args.join(" ")} failed: ${e?.message ?? e}`);

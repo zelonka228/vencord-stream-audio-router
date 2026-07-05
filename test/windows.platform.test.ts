@@ -224,6 +224,28 @@ test("does not match a real Capture device whose name coincidentally contains 'c
 
 // ---------------------------------------------------------------------------
 
+// Regression test for round 4: findCableCaptureRegistryKey() used to check
+// `deviceName.trim().toLowerCase() === "vb-audio virtual cable"` - an exact
+// match against the single-cable product's name only. Round 3 deliberately
+// broadened isCableDevice() (used everywhere else in this file) to the
+// whole "VB-Audio " driver-name prefix specifically so sibling products
+// (VB-Cable A+B, Voicemeeter/Voicemeeter Banana/Potato) are treated
+// consistently as "the cable" - but this function was missed by that
+// refactor and kept the old exact-match, so a user with e.g. Voicemeeter's
+// "VB-Audio Voicemeeter VAIO" capture endpoint instead of the plain
+// "VB-Audio Virtual Cable" product got `null` here, making
+// enableCableListen() throw a misleading "install VB-Audio Virtual Cable"
+// error even though the rest of the file already recognizes their device as
+// a supported cable-family product.
+test("finds the registry key for a VB-Audio sibling product's capture endpoint (e.g. Voicemeeter), not just the exact VB-Cable product name", () => {
+    const header = SAMPLE_CSV.split("\r\n")[0];
+    const row = "CABLE Output,Device,Capture,VB-Audio Voicemeeter VAIO,,,,Active,No,,100.0%,,,0.00 dB,2,,\"100.0%, 100.0%\",{x}.{y},VB-Audio Voicemeeter VAIO\\Device\\CABLE Output\\Capture,,,,HKEY_LOCAL_MACHINE\\Voicemeeter\\Key,,";
+    const raw = [header, row].join("\r\n");
+    assert.equal(findCableCaptureRegistryKey(parseSvclCsv(raw)), "HKEY_LOCAL_MACHINE\\Voicemeeter\\Key");
+});
+
+// ---------------------------------------------------------------------------
+
 console.log("pickAlternateDevice");
 
 function device(name: string, isDefault: boolean, deviceName: string = name): RenderDevice {
@@ -553,6 +575,90 @@ test("a restore queued while an exclude is still in flight runs after it complet
         "restore:done"
     ]);
     assert.equal(excluded.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+
+// Regression test for round 4: runSvcl() called execFileAsync(exePath, args)
+// with no timeout. Every excludeAppAudio()/restoreAudio() call runs through
+// serialize()'s tail promise, so a svcl.exe process that never exits (hung
+// waiting on a modal dialog, or wedged against a misbehaving audio driver's
+// IPC call) would leave `operationTail` permanently unsettled - the line
+// that advances the tail for the *next* queued caller never runs, because
+// the current call's own promise never resolves or rejects. Every later
+// exclude/restore call, including the plugin's own stop()-triggered
+// restoreAudio(), would then await forever with no recovery short of
+// restarting Discord. The fix passes an explicit timeout to execFileAsync()
+// so a hung child process is killed and its promise rejects instead of
+// hanging indefinitely - which serialize() already handles correctly, since
+// a rejected call still unblocks the queue for whoever's next (see the
+// rejection-propagation test above). This test recreates the serialize()
+// pattern standalone against a stub that never settles without a timeout,
+// and proves that adding a timeout (Promise.race against a timer, mirroring
+// what execFileAsync's own `timeout` option does under the hood by killing
+// the child and rejecting) lets a later queued call still run.
+console.log("\ntimeout unblocks a wedged serialized queue");
+
+test("a call that hangs forever would permanently block a later queued call with no timeout", async () => {
+    let tail: Promise<void> = Promise.resolve();
+
+    function serialize<T>(fn: () => Promise<T>): Promise<T> {
+        const result = tail.then(fn, fn);
+        tail = result.then(() => { }, () => { });
+        return result;
+    }
+
+    const log: string[] = [];
+
+    // Simulates a hung svcl.exe call with no timeout: the returned promise
+    // never resolves or rejects, exactly like execFileAsync() without a
+    // `timeout` option against a wedged child process.
+    const hungCall = serialize(() => new Promise<void>(() => { }));
+    const nextCall = serialize(async () => { log.push("next call ran"); });
+
+    let nextSettled = false;
+    nextCall.then(() => { nextSettled = true; });
+
+    await new Promise(r => setTimeout(r, 50));
+
+    assert.equal(nextSettled, false, "the next call must still be stuck behind the hung one with no timeout");
+    assert.deepEqual(log, []);
+
+    void hungCall; // never settles; intentionally left unawaited/unresolved
+});
+
+test("a timeout on the underlying call lets a later queued call still run after the hang", async () => {
+    let tail: Promise<void> = Promise.resolve();
+
+    function serialize<T>(fn: () => Promise<T>): Promise<T> {
+        const result = tail.then(fn, fn);
+        tail = result.then(() => { }, () => { });
+        return result;
+    }
+
+    function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("timed out")), ms);
+            promise.then(
+                v => { clearTimeout(timer); resolve(v); },
+                e => { clearTimeout(timer); reject(e); }
+            );
+        });
+    }
+
+    const log: string[] = [];
+
+    // Same "hangs forever" stub as above, but now wrapped the same way
+    // runSvcl() wraps execFileAsync() with an explicit timeout - the
+    // underlying operation still never settles on its own, but the wrapper
+    // rejects after the timeout instead of waiting forever.
+    const hungCall = serialize(() => withTimeout(new Promise<void>(() => { }), 20));
+    const nextCall = serialize(async () => { log.push("next call ran"); });
+
+    await assert.rejects(hungCall, /timed out/);
+    await nextCall;
+
+    assert.deepEqual(log, ["next call ran"]);
 });
 
 // ---------------------------------------------------------------------------

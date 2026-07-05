@@ -210,7 +210,15 @@ export function findOwnerModuleOfSink(raw: string, sinkName: string): string | n
         // sink's own top-level "Name:" property line should count.
         if (!new RegExp(`^[^\\S\\r\\n]*Name:\\s*${escapeRegExp(sinkName)}\\s*$`, "m").test(block)) continue;
 
-        const ownerMatch = block.match(/Owner Module:\s*(\d+)/);
+        // Anchored the same way as the "Name:" check above, and for the same
+        // reason: `Owner Module:` is itself a bare, unescaped field, so an
+        // unanchored search could match a substring embedded in some OTHER
+        // free-text field (e.g. `Description: Fake Owner Module: 31337`,
+        // fully attacker/hardware-controlled) that merely happens to contain
+        // the literal text "Owner Module: <digits>" - without ever needing a
+        // fabricated extra block or an embedded newline. Only the block's own
+        // top-level "Owner Module:" property line may ever count.
+        const ownerMatch = block.match(/^[^\S\r\n]*Owner Module:\s*(\d+)\s*$/m);
         if (ownerMatch) matches.push(ownerMatch[1]);
     }
 
@@ -474,10 +482,29 @@ export async function excludeAppAudio(sinkInputId: string): Promise<void> {
  * reload.
  */
 export async function restoreAudio(): Promise<void> {
-    const modulesRaw = await pactl(["list", "modules"]).catch(() => "");
+    // Track real failures separately from "there was nothing to clean up".
+    // Every pactl call below used to swallow its error unconditionally
+    // (`.catch(() => {})`), including the very first `list modules` lookup
+    // and every `unload-module` call. That means if pactl was genuinely
+    // failing - e.g. transiently unreachable under heavy system load, or a
+    // PipeWire hiccup - restoreAudio() would silently do nothing at all and
+    // still resolve successfully. The caller (index.tsx's handleRestore)
+    // shows an unconditional "Audio restored" success toast the moment this
+    // promise resolves, so the user would be told the routing was torn down
+    // when the null-sink and loopback are actually both still fully active.
+    // Surface a real Error when a step we KNOW should have worked (we found
+    // something to unload) actually failed, so the toast reflects reality.
+    const errors: string[] = [];
+
+    const modulesRaw = await pactl(["list", "modules"]).catch(e => {
+        errors.push(`could not list modules: ${errorText(e)}`);
+        return "";
+    });
     const loopbackIds = findModuleIdsByArgument(modulesRaw, `source=${EXCLUDED_SINK_NAME}.monitor`);
     for (const id of loopbackIds) {
-        await pactl(["unload-module", id]).catch(() => { });
+        await pactl(["unload-module", id]).catch(e => {
+            errors.push(`could not unload loopback module ${id}: ${errorText(e)}`);
+        });
     }
 
     // Uses the short-list format (not the verbose `list sinks` parsed by
@@ -489,11 +516,35 @@ export async function restoreAudio(): Promise<void> {
     // description (or similar free-text field) sitting in the same `pactl
     // list sinks` output can never prevent restoreAudio() from finding and
     // unloading our own sink's real module.
-    const shortSinksRaw = await pactl(["list", "short", "sinks"]).catch(() => "");
+    const shortSinksRaw = await pactl(["list", "short", "sinks"]).catch(e => {
+        errors.push(`could not list sinks: ${errorText(e)}`);
+        return "";
+    });
     const excludedSinkModuleId = findOwnerModuleIdOfShortSink(shortSinksRaw, EXCLUDED_SINK_NAME);
     if (excludedSinkModuleId) {
-        await pactl(["unload-module", excludedSinkModuleId]).catch(() => { });
+        await pactl(["unload-module", excludedSinkModuleId]).catch(e => {
+            errors.push(`could not unload excluded sink module ${excludedSinkModuleId}: ${errorText(e)}`);
+        });
     }
+
+    const err = buildRestoreAudioError(errors);
+    if (err) throw err;
+}
+
+function errorText(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Pure helper: given the list of failure messages collected while attempting
+ * cleanup steps, returns the Error restoreAudio() should throw, or null if
+ * nothing failed. Split out from restoreAudio() itself purely so this
+ * decision - "any collected failure means restore did NOT fully complete,
+ * full stop" - is unit-testable without mocking child_process/pactl.
+ */
+export function buildRestoreAudioError(errors: string[]): Error | null {
+    if (errors.length === 0) return null;
+    return new Error(`Restore did not fully complete: ${errors.join("; ")}`);
 }
 
 export async function isSupported(): Promise<boolean> {

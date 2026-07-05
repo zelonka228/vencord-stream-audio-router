@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 
 import {
+    buildRestoreAudioError,
     findModuleIdsByArgument,
     findOwnerModuleIdOfShortSink,
     findOwnerModuleOfSink,
@@ -321,6 +322,32 @@ Sink #2
     assert.equal(findOwnerModuleOfSink(withoutBlankLine, "VencordExcludedAudio"), null);
 });
 
+test("does not false-positive on an unrelated field whose value happens to CONTAIN 'Owner Module: <n>' (no fake extra block needed)", () => {
+    // Regression (round 4): the "Owner Module:" match used to be a plain,
+    // unanchored `block.match(/Owner Module:\s*(\d+)/)`. `Description:` (like
+    // `Name:`, checked above) is a bare, unescaped field that pactl prints
+    // verbatim - it can come from attacker/hardware-influenced sources (e.g.
+    // a Bluetooth device's self-advertised name). Unlike the fabricated-
+    // extra-block attacks tested elsewhere, this doesn't even need an
+    // embedded newline or a second block: a description whose text simply
+    // CONTAINS the literal substring "Owner Module: 31337" anywhere on its
+    // own line, inside ONE single genuine "Sink #" block, used to be enough
+    // to fool the unanchored regex into reporting that fake id instead of
+    // the block's real "Owner Module:" line - causing restoreAudio() (via
+    // findOwnerModuleOfSink, if ever reintroduced as a live lookup) to
+    // unload an attacker-chosen module id instead of the sink's real owner.
+    const raw = `
+Sink #55
+	State: RUNNING
+	Name: VencordExcludedAudio
+	Description: Fake Owner Module: 31337
+	Owner Module: 77
+	Driver: module-null-sink.c
+`.trim();
+
+    assert.equal(findOwnerModuleOfSink(raw, "VencordExcludedAudio"), "77");
+});
+
 // ---------------------------------------------------------------------------
 
 console.log("findModuleIdsByArgument");
@@ -610,6 +637,43 @@ test("cannot be fooled by a fabricated 'Description'-style injection, unlike the
 });
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+
+console.log("buildRestoreAudioError / restoreAudio failure surfacing");
+
+test("returns null (no error) when nothing failed", () => {
+    assert.equal(buildRestoreAudioError([]), null);
+});
+
+test("restoreAudio must not silently report success when a pactl step actually failed", () => {
+    // Regression (round 4): restoreAudio() used to swallow every pactl
+    // failure via unconditional `.catch(() => {})`, including the very first
+    // `pactl list modules` lookup. If pactl was genuinely failing - e.g.
+    // transiently unreachable under heavy system load, or a PipeWire hiccup -
+    // restoreAudio() would resolve successfully having done NOTHING, and
+    // index.tsx's handleRestore shows an unconditional "Audio restored"
+    // success toast the moment the promise resolves. The user would be told
+    // the null-sink/loopback routing was torn down when it's actually still
+    // fully active. restoreAudio() now collects a message per failed step and
+    // throws via buildRestoreAudioError when any step failed, so the toast
+    // (which calls notifyError on a thrown rejection) reflects reality
+    // instead of always claiming success.
+    const err = buildRestoreAudioError(["could not list modules: pactl timed out"]);
+    assert.ok(err instanceof Error);
+    assert.match(err!.message, /did not fully complete/);
+    assert.match(err!.message, /could not list modules: pactl timed out/);
+});
+
+test("aggregates multiple independent step failures into one message", () => {
+    const err = buildRestoreAudioError([
+        "could not unload loopback module 11: pactl timed out",
+        "could not unload excluded sink module 5: pactl timed out"
+    ]);
+    assert.ok(err instanceof Error);
+    assert.match(err!.message, /loopback module 11/);
+    assert.match(err!.message, /excluded sink module 5/);
+});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
